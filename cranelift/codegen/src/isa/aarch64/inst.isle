@@ -882,6 +882,11 @@
        ;; A "break" instruction, used for e.g. traps and debug breakpoints.
        (Brk)
 
+       ;; A supervisor call `svc #0`
+       (Syscall 
+            (args ValueRegsVec)
+            (ret WritableReg))
+
        ;; An instruction guaranteed to always be undefined and to trigger an illegal instruction at
        ;; runtime.
        (Udf
@@ -2970,6 +2975,14 @@
 (decl brk () SideEffectNoResult)
 (rule (brk)
       (SideEffectNoResult.Inst (MInst.Brk)))
+
+;; Helper for generating `syscall` instructions.
+(decl aarch64_syscall (ValueSlice) Reg)
+(rule (aarch64_syscall args)
+      (let ((ret WritableReg (temp_writable_reg $I64))
+            (_ Unit (emit (MInst.Syscall args ret))))
+        ret))
+      
 
 ;; Helper for generating `addp` instructions.
 (spec (addp x y s)

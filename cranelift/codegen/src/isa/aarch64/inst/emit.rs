@@ -733,6 +733,9 @@ impl MachInstEmit for Inst {
         let mut start_off = sink.cur_offset();
 
         match self {
+            &Inst::Syscall { .. } => {
+                sink.put4(0b11010100000000000000000000000001);
+            }
             &Inst::AluRRR {
                 alu_op,
                 size,

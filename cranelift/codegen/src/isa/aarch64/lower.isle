@@ -2482,6 +2482,11 @@
 (rule (lower (debugtrap))
       (side_effect (brk)))
 
+;;;; Rules for `syscall` ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(rule (lower (syscall args)) 
+      (aarch64_syscall args))
+
 ;;;; Rules for `func_addr` ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (rule (lower (func_addr (func_ref_data _ extname _)))

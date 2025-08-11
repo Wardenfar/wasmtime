@@ -3870,4 +3870,23 @@ pub(crate) fn define(
             Operand::new("a", &TxN.dynamic_to_vector()).with_doc("New fixed vector"),
         ]),
     );
+
+    ig.push(
+        Inst::new(
+            "syscall",
+            r#"
+        Do syscall
+        "#,
+            &formats.multiary,
+        )
+        .operands_in(vec![
+            Operand::new("args", &entities.varargs).with_doc("arguments"),
+        ])
+        .operands_out(vec![
+            Operand::new("ret", NarrowInt).with_doc("return value"),
+        ])
+        .can_load()
+        .can_store()
+        .other_side_effects(),
+    );
 }
