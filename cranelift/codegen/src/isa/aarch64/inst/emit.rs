@@ -736,7 +736,7 @@ impl MachInstEmit for Inst {
             &Inst::Mrs { id, ret } => {
                 sink.put4(
                     0b11010101001100000000000000000000_u32
-                        | ((id.bits() as u32) & 0xf) << 5
+                        | ((id.bits() as u32) & 0b1_111_1111_1111_111) << 5
                         | machreg_to_gpr(ret.to_reg()),
                 );
             }
