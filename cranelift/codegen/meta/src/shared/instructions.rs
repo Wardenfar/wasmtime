@@ -3889,4 +3889,21 @@ pub(crate) fn define(
         .can_store()
         .other_side_effects(),
     );
+
+    ig.push(
+        Inst::new(
+            "read_sys_reg",
+            r#"
+        Read system register
+        "#,
+            &formats.unary_imm,
+        )
+        .operands_in(vec![Operand::new("id", &imm.imm64)])
+        .operands_out(vec![
+            Operand::new("value", NarrowInt).with_doc("return value"),
+        ])
+        .can_load()
+        .can_store()
+        .other_side_effects(),
+    );
 }

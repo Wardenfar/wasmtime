@@ -887,6 +887,11 @@
             (args ValueRegsVec)
             (ret WritableReg))
 
+      ;; Read system register
+       (Mrs 
+            (id Imm64)
+            (ret WritableReg))
+
        ;; An instruction guaranteed to always be undefined and to trigger an illegal instruction at
        ;; runtime.
        (Udf
@@ -2983,6 +2988,13 @@
             (_ Unit (emit (MInst.Syscall args ret))))
         ret))
       
+
+;; Helper for generating `mrs` instructions.
+(decl aarch64_mrs (Imm64) Reg)
+(rule (aarch64_mrs id)
+      (let ((ret WritableReg (temp_writable_reg $I64))
+            (_ Unit (emit (MInst.Mrs id ret))))
+        ret))
 
 ;; Helper for generating `addp` instructions.
 (spec (addp x y s)

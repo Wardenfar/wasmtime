@@ -733,6 +733,13 @@ impl MachInstEmit for Inst {
         let mut start_off = sink.cur_offset();
 
         match self {
+            &Inst::Mrs { id, ret } => {
+                sink.put4(
+                    0b110101010011_u32
+                        | ((id.bits() as u32) & 0xf) << 5
+                        | machreg_to_gpr(ret.to_reg()),
+                );
+            }
             &Inst::Syscall { .. } => {
                 sink.put4(0b11010100000000000000000000000001);
             }

@@ -363,6 +363,9 @@ fn aarch64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             }
             collector.reg_fixed_def(ret, xreg(0));
         }
+        Inst::Mrs { ret, .. } => {
+            collector.reg_def(ret);
+        }
         Inst::AluRRR { rd, rn, rm, .. } => {
             collector.reg_def(rd);
             collector.reg_use(rn);
@@ -1235,6 +1238,7 @@ impl Inst {
         }
 
         match self {
+            &Inst::Mrs { .. } => "mrs".to_string(),
             &Inst::Syscall { .. } => "syscall".to_string(),
             &Inst::Nop0 => "nop-zero-len".to_string(),
             &Inst::Nop4 => "nop".to_string(),
