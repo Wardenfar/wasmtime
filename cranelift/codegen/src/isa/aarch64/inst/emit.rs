@@ -733,6 +733,10 @@ impl MachInstEmit for Inst {
         let mut start_off = sink.cur_offset();
 
         match self {
+            &Inst::Custom { custom, .. } => {
+                sink.put4(custom.emit);
+            }
+
             &Inst::Mrs { id, ret } => {
                 sink.put4(
                     0b11010101001100000000000000000000_u32

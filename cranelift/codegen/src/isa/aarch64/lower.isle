@@ -2487,7 +2487,12 @@
 (rule (lower (syscall args)) 
       (aarch64_syscall args))
 
-;;;; Rules for `syscall` ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; Rules for `custom` ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(rule (lower (has_type ty (custom c args))) 
+      (emit_custom c args ty))
+
+;;;; Rules for `mrs` ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (rule (lower (read_sys_reg id)) 
       (aarch64_mrs id))

@@ -393,6 +393,7 @@ pub fn write_operands(w: &mut dyn Write, dfg: &DataFlowGraph, inst: Inst) -> fmt
     use crate::ir::instructions::InstructionData::*;
     let ctrl_ty = dfg.ctrl_typevar(inst);
     match dfg.insts[inst] {
+        Custom { custom, .. } => (custom.write)(w),
         AtomicRmw { op, args, .. } => write!(w, " {} {}, {}", op, args[0], args[1]),
         AtomicCas { args, .. } => write!(w, " {}, {}, {}", args[0], args[1], args[2]),
         LoadNoOffset { flags, arg, .. } => write!(w, "{flags} {arg}"),

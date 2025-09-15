@@ -3906,4 +3906,16 @@ pub(crate) fn define(
         .can_store()
         .other_side_effects(),
     );
+
+    ig.push(
+        Inst::new("custom", r"custom", &formats.custom)
+            .operands_in(vec![
+                Operand::new("custom", &imm.custom).with_doc("custom"),
+                Operand::new("args", &entities.varargs).with_doc("args"),
+            ])
+            .operands_out(vec![Operand::new("ret", Int).with_doc("ret")])
+            .can_load()
+            .can_store()
+            .other_side_effects(),
+    );
 }

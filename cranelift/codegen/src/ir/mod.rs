@@ -28,6 +28,10 @@ mod trapcode;
 pub mod types;
 mod user_stack_maps;
 
+use core::fmt::Debug;
+use core::hash::Hash;
+use std::boxed::Box;
+
 #[cfg(feature = "enable-serde")]
 use serde_derive::{Deserialize, Serialize};
 
@@ -71,7 +75,9 @@ pub use crate::ir::types::Type;
 pub(crate) use crate::ir::user_stack_maps::UserStackMapEntryVec;
 pub use crate::ir::user_stack_maps::{UserStackMap, UserStackMapEntry};
 
+use crate::Reg;
 use crate::entity::{PrimaryMap, SecondaryMap, entity_impl};
+use crate::machinst::{OperandVisitor, ValueRegs};
 
 /// Map of jump tables.
 pub type JumpTables = PrimaryMap<JumpTable, JumpTableData>;
@@ -114,4 +120,58 @@ pub enum ValueLabelAssignments {
         /// The label index.
         value: Value,
     },
+}
+
+/// Custom
+pub type Custom = &'static CustomTable;
+
+impl PartialEq for Custom {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(*self as _, *other as _)
+    }
+}
+
+impl Eq for Custom {}
+
+impl Hash for Custom {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        (*self as *const CustomTable).hash(state);
+    }
+}
+
+impl Debug for Custom {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("custom")
+    }
+}
+
+/// Custom
+#[allow(unpredictable_function_pointer_comparisons)]
+pub struct CustomTable {
+    /// Write
+    pub write: Box<dyn Fn(&mut dyn core::fmt::Write) -> core::fmt::Result>,
+    /// Emit
+    pub emit: u32,
+    /// Operands
+    pub operands: Box<dyn Fn(&mut dyn OperandVisitor, &mut [ValueRegs<Reg>], &mut Reg)>,
+}
+
+#[cfg(feature = "enable-serde")]
+impl<'de> serde::Deserialize<'de> for Custom {
+    fn deserialize<D>(_: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        todo!()
+    }
+}
+
+#[cfg(feature = "enable-serde")]
+impl serde::Serialize for Custom {
+    fn serialize<S>(&self, _: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        todo!()
+    }
 }

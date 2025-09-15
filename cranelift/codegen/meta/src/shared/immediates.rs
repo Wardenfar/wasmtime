@@ -56,6 +56,8 @@ pub(crate) struct Immediates {
 
     /// A code indicating the arithmetic operation to perform in an atomic_rmw memory access.
     pub atomic_rmw_op: OperandKind,
+
+    pub custom: OperandKind,
 }
 
 fn new_imm(
@@ -87,6 +89,7 @@ fn new_enum(
 impl Immediates {
     pub fn new() -> Self {
         Self {
+            custom: new_imm("custom", "ir::Custom", "custom"),
             imm64: new_imm(
                 "imm",
                 "ir::immediates::Imm64",

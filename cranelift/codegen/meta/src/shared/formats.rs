@@ -42,11 +42,14 @@ pub(crate) struct Formats {
     pub(crate) unary_ieee32: Rc<InstructionFormat>,
     pub(crate) unary_ieee64: Rc<InstructionFormat>,
     pub(crate) unary_imm: Rc<InstructionFormat>,
+    pub(crate) custom: Rc<InstructionFormat>,
 }
 
 impl Formats {
     pub fn new(imm: &Immediates, entities: &EntityRefs) -> Self {
         Self {
+            custom: Builder::new("Custom").imm(&imm.custom).varargs().build(),
+
             unary: Builder::new("Unary").value().build(),
 
             unary_imm: Builder::new("UnaryImm").imm(&imm.imm64).build(),

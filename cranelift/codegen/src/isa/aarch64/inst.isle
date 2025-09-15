@@ -7,6 +7,11 @@
        ;; A no-op that is one instruction large.
        (Nop4)
 
+       (Custom
+            (custom Custom)
+            (args ValueRegsVec)
+            (ret WritableReg))
+
        ;; An ALU operation with two register sources and a register destination.
        (AluRRR
         (alu_op ALUOp)
@@ -2987,7 +2992,13 @@
       (let ((ret WritableReg (temp_writable_reg $I64))
             (_ Unit (emit (MInst.Syscall args ret))))
         ret))
-      
+
+;; Helper for generating `custom` instructions.
+(decl emit_custom (Custom ValueSlice Type) Reg)
+(rule (emit_custom c args ty) 
+      (let ((ret WritableReg (temp_writable_reg ty))
+            (_ Unit (emit (MInst.Custom c args ret))))
+        ret))
 
 ;; Helper for generating `mrs` instructions.
 (decl aarch64_mrs (Imm64) Reg)

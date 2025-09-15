@@ -73,6 +73,8 @@ pub use crate::machinst::{
     VCodeConstantData, VCodeConstants, VCodeInst, Writable,
 };
 
+pub use crate::machinst::reg::{OperandVisitor, OperandVisitorImpl};
+
 mod alias_analysis;
 mod constant_hash;
 mod context;

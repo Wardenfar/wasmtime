@@ -3347,6 +3347,7 @@ impl<'a> Parser<'a> {
                     code,
                 }
             }
+            InstructionFormat::Custom => todo!(),
         };
         Ok(idata)
     }

@@ -353,6 +353,9 @@ fn pairmemarg_operands(pairmemarg: &mut PairAMode, collector: &mut impl OperandV
 
 fn aarch64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
     match inst {
+        Inst::Custom { custom, args, ret } => {
+            (custom.operands)(collector, args.as_mut_slice(), ret.reg_mut())
+        }
         Inst::Syscall { args, ret } => {
             assert!(args.len() >= 1);
             assert!(args.len() <= 6 + 1);
@@ -1238,6 +1241,7 @@ impl Inst {
         }
 
         match self {
+            &Inst::Custom { .. } => "custom".to_string(),
             &Inst::Mrs { .. } => "mrs".to_string(),
             &Inst::Syscall { .. } => "syscall".to_string(),
             &Inst::Nop0 => "nop-zero-len".to_string(),

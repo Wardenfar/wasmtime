@@ -573,6 +573,7 @@ impl<'a> Verifier<'a> {
         }
 
         match self.func.dfg.insts[inst] {
+            Custom { .. } => {}
             MultiAry { ref args, .. } => {
                 self.verify_value_list(inst, args, errors)?;
             }

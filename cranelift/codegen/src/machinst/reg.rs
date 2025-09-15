@@ -375,7 +375,9 @@ impl<'a, F: Fn(VReg) -> VReg> OperandCollector<'a, F> {
     }
 }
 
+/// d
 pub trait OperandVisitor {
+    /// d
     fn add_operand(
         &mut self,
         reg: &mut Reg,
@@ -384,6 +386,7 @@ pub trait OperandVisitor {
         pos: OperandPos,
     );
 
+    /// d
     fn debug_assert_is_allocatable_preg(&self, _reg: PReg, _expected: bool) {}
 
     /// Add a register clobber set. This is a set of registers that
@@ -392,6 +395,7 @@ pub trait OperandVisitor {
     fn reg_clobbers(&mut self, _regs: PRegSet) {}
 }
 
+/// d
 pub trait OperandVisitorImpl: OperandVisitor {
     /// Add a use of a fixed, nonallocatable physical register.
     fn reg_fixed_nonallocatable(&mut self, preg: PReg) {
