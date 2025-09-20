@@ -163,6 +163,7 @@ pub struct Config {
     pub(crate) coredump_on_trap: bool,
     pub(crate) macos_use_mach_ports: bool,
     pub(crate) detect_host_feature: Option<fn(&str) -> Option<bool>>,
+    pub(crate) x86_float_abi_ok: Option<bool>,
 }
 
 /// User-provided configuration for the compiler.
@@ -271,6 +272,7 @@ impl Config {
             detect_host_feature: Some(detect_host_feature),
             #[cfg(not(feature = "std"))]
             detect_host_feature: None,
+            x86_float_abi_ok: None,
         };
         #[cfg(any(feature = "cranelift", feature = "winch"))]
         {
@@ -279,9 +281,10 @@ impl Config {
 
             // When running under MIRI try to optimize for compile time of wasm
             // code itself as much as possible. Disable optimizations by
-            // default.
+            // default and use the fastest regalloc available to us.
             if cfg!(miri) {
                 ret.cranelift_opt_level(OptLevel::None);
+                ret.cranelift_regalloc_algorithm(RegallocAlgorithm::SinglePass);
             }
         }
 
@@ -1186,7 +1189,10 @@ impl Config {
         self
     }
 
-    #[doc(hidden)] // FIXME(#3427) - if/when implemented then un-hide this
+    /// Configures whether the [Exception-handling proposal][proposal] is enabled or not.
+    ///
+    /// [proposal]: https://github.com/WebAssembly/exception-handling
+    #[cfg(feature = "gc")]
     pub fn wasm_exceptions(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::EXCEPTIONS, enable);
         self
@@ -1263,6 +1269,15 @@ impl Config {
         self
     }
 
+    /// Configures whether extra debug checks are inserted into
+    /// Wasmtime-generated code by Cranelift.
+    ///
+    /// The default value for this is `false`
+    #[cfg(any(feature = "cranelift", feature = "winch"))]
+    pub fn cranelift_wasmtime_debug_checks(&mut self, enable: bool) -> &mut Self {
+        unsafe { self.cranelift_flag_set("wasmtime_debug_checks", &enable.to_string()) }
+    }
+
     /// Configures the Cranelift code generator optimization level.
     ///
     /// When the Cranelift code generator is used you can configure the
@@ -1296,6 +1311,7 @@ impl Config {
     pub fn cranelift_regalloc_algorithm(&mut self, algo: RegallocAlgorithm) -> &mut Self {
         let val = match algo {
             RegallocAlgorithm::Backtracking => "backtracking",
+            RegallocAlgorithm::SinglePass => "single_pass",
         };
         self.compiler_config
             .settings
@@ -2032,7 +2048,7 @@ impl Config {
     /// This may result in faster execution at runtime, but adds additional
     /// compilation time. Inlining may also enlarge the size of compiled
     /// artifacts (for example, the size of the result of
-    /// [`Engine::precompile_component`]).
+    /// [`Engine::precompile_component`](crate::Engine::precompile_component)).
     ///
     /// Inlining is not supported by all of Wasmtime's compilation strategies;
     /// currently, it only Cranelift supports it. This setting will be ignored
@@ -2109,7 +2125,8 @@ impl Config {
                     | WasmFeatures::GC_TYPES
                     | WasmFeatures::EXCEPTIONS
                     | WasmFeatures::LEGACY_EXCEPTIONS
-                    | WasmFeatures::STACK_SWITCHING;
+                    | WasmFeatures::STACK_SWITCHING
+                    | WasmFeatures::CM_ASYNC;
                 match self.compiler_target().architecture {
                     target_lexicon::Architecture::Aarch64(_) => {
                         unsupported |= WasmFeatures::THREADS;
@@ -2226,9 +2243,16 @@ impl Config {
         if self.max_wasm_stack == 0 {
             bail!("max_wasm_stack size cannot be zero");
         }
-        #[cfg(not(feature = "wmemcheck"))]
-        if self.wmemcheck {
+        if !cfg!(feature = "wmemcheck") && self.wmemcheck {
             bail!("wmemcheck (memory checker) was requested but is not enabled in this build");
+        }
+
+        if !cfg!(feature = "gc") && features.gc_types() {
+            bail!("support for GC was disabled at compile time")
+        }
+
+        if !cfg!(feature = "gc") && features.contains(WasmFeatures::EXCEPTIONS) {
+            bail!("exceptions support requires garbage collection (GC) to be enabled in the build");
         }
 
         let mut tunables = Tunables::default_for_target(&self.compiler_target())?;
@@ -2675,6 +2699,90 @@ impl Config {
         self.tunables.signals_based_traps = Some(enable);
         self
     }
+
+    /// Enable/disable GC support in Wasmtime entirely.
+    ///
+    /// This flag can be used to gate whether GC infrastructure is enabled or
+    /// initialized in Wasmtime at all. Wasmtime's GC implementation is required
+    /// for the [`Self::wasm_gc`] proposal, [`Self::wasm_function_references`],
+    /// and [`Self::wasm_exceptions`] at this time. None of those proposal can
+    /// be enabled without also having this option enabled.
+    ///
+    /// This option defaults to whether the crate `gc` feature is enabled or
+    /// not.
+    pub fn gc_support(&mut self, enable: bool) -> &mut Self {
+        self.wasm_feature(WasmFeatures::GC_TYPES, enable)
+    }
+
+    /// Explicitly indicate or not whether the host is using a hardware float
+    /// ABI on x86 targets.
+    ///
+    /// This configuration option is only applicable on the
+    /// `x86_64-unknown-none` Rust target and has no effect on other host
+    /// targets. The `x86_64-unknown-none` Rust target does not support hardware
+    /// floats by default and uses a "soft float" implementation and ABI. This
+    /// means that `f32`, for example, is passed in a general-purpose register
+    /// between functions instead of a floating-point register. This does not
+    /// match Cranelift's ABI for `f32` where it's passed in floating-point
+    /// registers.  Cranelift does not have support for a "soft float"
+    /// implementation where all floating-point operations are lowered to
+    /// libcalls.
+    ///
+    /// This means that for the `x86_64-unknown-none` target the ABI between
+    /// Wasmtime's libcalls and the host is incompatible when floats are used.
+    /// This further means that, by default, Wasmtime is unable to load native
+    /// code when compiled to the `x86_64-unknown-none` target. The purpose of
+    /// this option is to explicitly allow loading code and bypass this check.
+    ///
+    /// Setting this configuration option to `true` indicates that either:
+    /// (a) the Rust target is compiled with the hard-float ABI manually via
+    /// `-Zbuild-std` and a custom target JSON configuration, or (b) sufficient
+    /// x86 features have been enabled in the compiler such that float libcalls
+    /// will not be used in Wasmtime. For (a) there is no way in Rust at this
+    /// time to detect whether a hard-float or soft-float ABI is in use on
+    /// stable Rust, so this manual opt-in is required. For (b) the only
+    /// instance where Wasmtime passes a floating-point value in a register
+    /// between the host and compiled wasm code is with libcalls.
+    ///
+    /// Float-based libcalls are only used when the compilation target for a
+    /// wasm module has insufficient target features enabled for native
+    /// support. For example SSE4.1 is required for the `f32.ceil` WebAssembly
+    /// instruction to be compiled to a native instruction. If SSE4.1 is not
+    /// enabled then `f32.ceil` is translated to a "libcall" which is
+    /// implemented on the host. Float-based libcalls can be avoided with
+    /// sufficient target features enabled, for example:
+    ///
+    /// * `self.cranelift_flag_enable("has_sse3")`
+    /// * `self.cranelift_flag_enable("has_ssse3")`
+    /// * `self.cranelift_flag_enable("has_sse41")`
+    /// * `self.cranelift_flag_enable("has_sse42")`
+    /// * `self.cranelift_flag_enable("has_fma")`
+    ///
+    /// Note that when these features are enabled Wasmtime will perform a
+    /// runtime check to determine that the host actually has the feature
+    /// present.
+    ///
+    /// For some more discussion see [#11506].
+    ///
+    /// [#11506]: https://github.com/bytecodealliance/wasmtime/issues/11506
+    ///
+    /// # Safety
+    ///
+    /// This method is not safe because it cannot be detected in Rust right now
+    /// whether the host is compiled with a soft or hard float ABI. Additionally
+    /// if the host is compiled with a soft float ABI disabling this check does
+    /// not ensure that the wasm module in question has zero usage of floats
+    /// in the boundary to the host.
+    ///
+    /// Safely using this method requires one of:
+    ///
+    /// * The host target is compiled to use hardware floats.
+    /// * Wasm modules loaded are compiled with enough x86 Cranelift features
+    ///   enabled to avoid float-related hostcalls.
+    pub unsafe fn x86_float_abi_ok(&mut self, enable: bool) -> &mut Self {
+        self.x86_float_abi_ok = Some(enable);
+        self
+    }
 }
 
 impl Default for Config {
@@ -2910,6 +3018,16 @@ pub enum RegallocAlgorithm {
     /// results in better register utilization, producing fewer spills
     /// and moves, but can cause super-linear compile runtime.
     Backtracking,
+    /// Generates acceptable code very quickly.
+    ///
+    /// This algorithm performs a single pass through the code,
+    /// guaranteed to work in linear time.  (Note that the rest of
+    /// Cranelift is not necessarily guaranteed to run in linear time,
+    /// however.) It cannot undo earlier decisions, however, and it
+    /// cannot foresee constraints or issues that may occur further
+    /// ahead in the code, so the code may have more spills and moves as
+    /// a result.
+    SinglePass,
 }
 
 /// Select which profiling technique to support.
@@ -2950,16 +3068,17 @@ pub enum WasmBacktraceDetails {
     Environment,
 }
 
-/// Describe the tri-state configuration of memory protection keys (MPK).
+/// Describe the tri-state configuration of keys such as MPK or PAGEMAP_SCAN.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum MpkEnabled {
-    /// Use MPK if supported by the current system; fall back to guard regions
-    /// otherwise.
+pub enum Enabled {
+    /// Enable this feature if it's detected on the host system, otherwise leave
+    /// it disabled.
     Auto,
-    /// Use MPK or fail if not supported.
-    Enable,
-    /// Do not use MPK.
-    Disable,
+    /// Enable this feature and fail configuration if the feature is not
+    /// detected on the host system.
+    Yes,
+    /// Do not enable this feature, even if the host system supports it.
+    No,
 }
 
 /// Configuration options used with [`InstanceAllocationStrategy::Pooling`] to
@@ -3482,11 +3601,11 @@ impl PoolingAllocationConfig {
     ///
     /// - `auto`: if MPK support is available the guard regions are removed; if
     ///   not, the guard regions remain
-    /// - `enable`: use MPK to eliminate guard regions; fail if MPK is not
+    /// - `yes`: use MPK to eliminate guard regions; fail if MPK is not
     ///   supported
-    /// - `disable`: never use MPK
+    /// - `no`: never use MPK
     ///
-    /// By default this value is `disabled`, but may become `auto` in future
+    /// By default this value is `no`, but may become `auto` in future
     /// releases.
     ///
     /// __WARNING__: this configuration options is still experimental--use at
@@ -3494,7 +3613,7 @@ impl PoolingAllocationConfig {
     /// regions; you may observe segmentation faults if anything is
     /// misconfigured.
     #[cfg(feature = "memory-protection-keys")]
-    pub fn memory_protection_keys(&mut self, enable: MpkEnabled) -> &mut Self {
+    pub fn memory_protection_keys(&mut self, enable: Enabled) -> &mut Self {
         self.config.memory_protection_keys = enable;
         self
     }
@@ -3520,7 +3639,7 @@ impl PoolingAllocationConfig {
     /// Check if memory protection keys (MPK) are available on the current host.
     ///
     /// This is a convenience method for determining MPK availability using the
-    /// same method that [`MpkEnabled::Auto`] does. See
+    /// same method that [`Enabled::Auto`] does. See
     /// [`PoolingAllocationConfig::memory_protection_keys`] for more
     /// information.
     #[cfg(feature = "memory-protection-keys")]
@@ -3540,6 +3659,45 @@ impl PoolingAllocationConfig {
     pub fn total_gc_heaps(&mut self, count: u32) -> &mut Self {
         self.config.limits.total_gc_heaps = count;
         self
+    }
+
+    /// Configures whether the Linux-specific [`PAGEMAP_SCAN` ioctl][ioctl] is
+    /// used to help reset linear memory.
+    ///
+    /// When [`Self::linear_memory_keep_resident`] or
+    /// [`Self::table_keep_resident`] options are configured to nonzero values
+    /// the default behavior is to `memset` the lowest addresses of a table or
+    /// memory back to their original contents. With the `PAGEMAP_SCAN` ioctl on
+    /// Linux this can be done to more intelligently scan for resident pages in
+    /// the region and only reset those pages back to their original contents
+    /// with `memset` rather than assuming the low addresses are all resident.
+    ///
+    /// This ioctl has the potential to provide a number of performance benefits
+    /// in high-reuse and high concurrency scenarios. Notably this enables
+    /// Wasmtime to scan the entire region of WebAssembly linear memory and
+    /// manually reset memory back to its original contents, up to
+    /// [`Self::linear_memory_keep_resident`] bytes, possibly skipping an
+    /// `madvise` entirely. This can be more efficient by avoiding removing
+    /// pages from the address space entirely and additionally ensuring that
+    /// future use of the linear memory doesn't incur page faults as the pages
+    /// remain resident.
+    ///
+    /// At this time this configuration option is still being evaluated as to
+    /// how appropriate it is for all use cases. It currently defaults to
+    /// `no` or disabled but may change to `auto`, enable if supported, in the
+    /// future. This option is only supported on Linux and requires a kernel
+    /// version of 6.7 or higher.
+    ///
+    /// [ioctl]: https://www.man7.org/linux/man-pages/man2/PAGEMAP_SCAN.2const.html
+    pub fn pagemap_scan(&mut self, enable: Enabled) -> &mut Self {
+        self.config.pagemap_scan = enable;
+        self
+    }
+
+    /// Tests whether [`Self::pagemap_scan`] is available or not on the host
+    /// system.
+    pub fn is_pagemap_scan_available() -> bool {
+        crate::runtime::vm::PoolingInstanceAllocatorConfig::is_pagemap_scan_available()
     }
 }
 

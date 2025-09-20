@@ -1108,6 +1108,7 @@ mod test_programs {
     use http_body_util::BodyExt;
     use hyper::header::HeaderValue;
     use std::io::{BufRead, BufReader, Read, Write};
+    use std::iter;
     use std::net::SocketAddr;
     use std::process::{Child, Command, Stdio};
     use test_programs_artifacts::*;
@@ -2159,6 +2160,90 @@ start a print 1234
             Ok(())
         }
     }
+
+    #[test]
+    #[cfg_attr(not(feature = "component-model-async"), ignore)]
+    fn cli_invoke_async() -> Result<()> {
+        let output = run_wasmtime(&[
+            "run",
+            "-Wcomponent-model-async",
+            "--invoke",
+            "echo(\"hello?\")",
+            CLI_INVOKE_ASYNC_COMPONENT,
+        ])?;
+        assert_eq!(output, "\"hello?\"\n");
+        Ok(())
+    }
+
+    fn run_much_stdout(component: &str, extra_flags: &[&str]) -> Result<()> {
+        let total_write_size = 1 << 18;
+        let expected = iter::repeat('a').take(total_write_size).collect::<String>();
+
+        for i in 10..15 {
+            let string = iter::repeat('a').take(1 << i).collect::<String>();
+            let times = (total_write_size >> i).to_string();
+            println!("writing {} bytes {times} times", string.len());
+
+            let mut args = Vec::new();
+            args.push("run");
+            args.extend_from_slice(extra_flags);
+            args.push(component);
+            args.push(&string);
+            args.push(&times);
+            let output = run_wasmtime(&args)?;
+            println!(
+                "expected {} bytes, got {} bytes",
+                expected.len(),
+                output.len()
+            );
+            assert!(output == expected);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_p1_much_stdout() -> Result<()> {
+        run_much_stdout(CLI_P1_MUCH_STDOUT_COMPONENT, &[])
+    }
+
+    #[test]
+    fn cli_p2_much_stdout() -> Result<()> {
+        run_much_stdout(CLI_P2_MUCH_STDOUT_COMPONENT, &[])
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "component-model-async"), ignore)]
+    fn cli_p3_much_stdout() -> Result<()> {
+        run_much_stdout(
+            CLI_P3_MUCH_STDOUT_COMPONENT,
+            &["-Wcomponent-model-async", "-Sp3"],
+        )
+    }
+
+    #[tokio::test]
+    #[cfg_attr(not(feature = "component-model-async"), ignore)]
+    async fn cli_serve_p3_hello_world() -> Result<()> {
+        let server = WasmtimeServe::new(CLI_SERVE_P3_HELLO_WORLD_COMPONENT, |cmd| {
+            cmd.arg("-Wcomponent-model-async");
+            cmd.arg("-Sp3,cli");
+        })?;
+
+        let result = server
+            .send_request(
+                hyper::Request::builder()
+                    .uri("http://localhost/")
+                    .body(String::new())
+                    .context("failed to make request")?,
+            )
+            .await?;
+
+        assert!(result.status().is_success());
+        assert_eq!(result.body(), "Hello, WASI!");
+
+        server.finish()?;
+        Ok(())
+    }
 }
 
 #[test]
@@ -2213,6 +2298,32 @@ fn is_vtune_available() -> bool {
 }
 
 #[test]
+fn profile_guest() -> Result<()> {
+    let tmpdir = std::env::temp_dir();
+    let dir = tmpdir.to_string_lossy();
+
+    let output = run_wasmtime_for_output(
+        &[
+            &format!("--profile=guest,{dir}/out.json"),
+            "--env",
+            "FOO=bar",
+            "tests/all/cli_tests/print_env.wat",
+        ],
+        None,
+    )?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!("> stdout:\n{stdout}");
+    println!("> stderr:\n{stderr}");
+    assert!(!stderr.contains("Error"));
+    let out_json = std::fs::read_to_string(format!("{dir}/out.json")).unwrap();
+    println!("> out.json:\n{out_json}");
+    Ok(())
+}
+
+#[test]
 fn unreachable_without_wasi() -> Result<()> {
     let output = run_wasmtime_for_output(
         &[
@@ -2243,6 +2354,9 @@ fn config_cli_flag() -> Result<()> {
 
         [codegen]
         collector = "null"
+
+        [debug]
+        address-map = true
 
         [wasm]
         max-wasm-stack = 65536

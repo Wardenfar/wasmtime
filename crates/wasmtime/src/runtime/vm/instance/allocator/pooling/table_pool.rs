@@ -9,7 +9,7 @@ use crate::runtime::vm::{
 };
 use crate::{prelude::*, vm::HostAlignedByteCount};
 use std::ptr::NonNull;
-use wasmtime_environ::{Module, Tunables};
+use wasmtime_environ::Module;
 
 /// Represents a pool of WebAssembly tables.
 ///
@@ -130,12 +130,12 @@ impl TablePool {
     }
 
     /// Allocate a single table for the given instance allocation request.
-    pub fn allocate(
+    pub async fn allocate(
         &self,
-        request: &mut InstanceAllocationRequest,
+        request: &mut InstanceAllocationRequest<'_, '_>,
         ty: &wasmtime_environ::Table,
-        tunables: &Tunables,
     ) -> Result<(TableAllocationIndex, Table)> {
+        let tunables = request.store.engine().tunables();
         let allocation_index = self
             .index_allocator
             .alloc()
@@ -143,29 +143,45 @@ impl TablePool {
             .ok_or_else(|| {
                 super::PoolConcurrencyLimitError::new(self.max_total_tables, "tables")
             })?;
+        let mut guard = DeallocateIndexGuard {
+            pool: self,
+            allocation_index,
+            active: true,
+        };
 
-        match (|| {
-            let base = self.get(allocation_index);
-            let data_size = self.data_size(crate::vm::table::wasm_to_table_type(ty.ref_type));
-            unsafe {
-                commit_pages(base, data_size)?;
-            }
+        let base = self.get(allocation_index);
+        let data_size = self.data_size(crate::vm::table::wasm_to_table_type(ty.ref_type));
+        unsafe {
+            commit_pages(base, data_size)?;
+        }
 
-            let ptr =
-                NonNull::new(std::ptr::slice_from_raw_parts_mut(base.cast(), data_size)).unwrap();
-            unsafe {
-                Table::new_static(
-                    ty,
-                    tunables,
-                    SendSyncPtr::new(ptr),
-                    &mut *request.store.get().unwrap(),
-                )
-            }
-        })() {
-            Ok(table) => Ok((allocation_index, table)),
-            Err(e) => {
-                self.index_allocator.free(SlotId(allocation_index.0));
-                Err(e)
+        let ptr = NonNull::new(std::ptr::slice_from_raw_parts_mut(base.cast(), data_size)).unwrap();
+        let table = unsafe {
+            Table::new_static(
+                ty,
+                tunables,
+                SendSyncPtr::new(ptr),
+                request.limiter.as_deref_mut(),
+            )
+            .await?
+        };
+        guard.active = false;
+        return Ok((allocation_index, table));
+
+        struct DeallocateIndexGuard<'a> {
+            pool: &'a TablePool,
+            allocation_index: TableAllocationIndex,
+            active: bool,
+        }
+
+        impl Drop for DeallocateIndexGuard<'_> {
+            fn drop(&mut self) {
+                if !self.active {
+                    return;
+                }
+                self.pool
+                    .index_allocator
+                    .free(SlotId(self.allocation_index.0));
             }
         }
     }

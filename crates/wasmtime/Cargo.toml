@@ -53,7 +53,7 @@ object = { workspace = true, features = ['unaligned'] }
 async-trait = { workspace = true, optional = true }
 encoding_rs = { version = "0.8.31", optional = true }
 bumpalo = "3.11.0"
-fxprof-processed-profile = { version = "0.6.0", optional = true }
+fxprof-processed-profile = { version = "0.8.1", optional = true }
 gimli = { workspace = true, optional = true }
 addr2line = { workspace = true, optional = true }
 semver = { workspace = true, optional = true }
@@ -103,7 +103,7 @@ tempfile = { workspace = true }
 libtest-mimic = { workspace = true }
 cranelift-native = { workspace = true }
 wasmtime-test-util = { workspace = true }
-tokio = { workspace = true, features = ["macros", "sync"] }
+tokio = { workspace = true, features = ["macros", "sync", "rt-multi-thread"] }
 
 [build-dependencies]
 cc = { workspace = true, optional = true }
@@ -115,6 +115,10 @@ harness = false
 
 [[test]]
 name = "engine_across_forks"
+harness = false
+
+[[test]]
+name = "pooling_alloc_near_oom"
 harness = false
 
 # =============================================================================
@@ -196,7 +200,6 @@ cache = ["dep:wasmtime-cache", "std"]
 # `async fn` and calling functions asynchronously.
 async = [
   "dep:wasmtime-fiber",
-  "dep:async-trait",
   "wasmtime-component-macro?/async",
   "runtime",
 ]
@@ -261,6 +264,7 @@ runtime = [
   "dep:windows-sys",
   "pulley-interpreter/interp",
   "dep:wasmtime-unwinder",
+  "dep:async-trait",
 ]
 
 # Enable support for garbage collection-related things.

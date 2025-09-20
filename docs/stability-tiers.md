@@ -83,6 +83,7 @@ For explanations of what each tier means see below.
 | WebAssembly Proposal | [`gc`]                     | production quality          |
 | WebAssembly Proposal | [`wide-arithmetic`]        | Unstable wasm proposal      |
 | WebAssembly Proposal | [`custom-page-sizes`]      | Unstable wasm proposal      |
+| WebAssembly Proposal | [`exception-handling`]     | fuzzing, dependence on GC   |
 | Execution Backend    | Pulley                     | More time fuzzing/baking    |
 
 [`memory64`]: https://github.com/WebAssembly/memory64/blob/master/proposals/memory64/Overview.md
@@ -228,7 +229,7 @@ here is:
 | [`gc`]                                  | ✅        | ❌     |
 | [`wide-arithmetic`]                     | ✅        | ✅     |
 | [`custom-page-sizes`]                   | ✅        | ✅     |
-| [`exception-handling`]                  | 🚧        | ❌     |
+| [`exception-handling`]                  | ✅        | ❌     |
 | [`stack-switching`]                     | 🚧        | ❌     |
 
 ##### aarch64
@@ -253,7 +254,7 @@ here is:
 | [`gc`]                                  | ✅        | ❌        |
 | [`wide-arithmetic`]                     | ✅        | ❌        |
 | [`custom-page-sizes`]                   | ✅        | ✅        |
-| [`exception-handling`]                  | 🚧        | ❌        |
+| [`exception-handling`]                  | ✅        | ❌        |
 | [`stack-switching`]                     | ❌        | ❌        |
 
 ##### s390x
@@ -278,7 +279,7 @@ here is:
 | [`gc`]                                  | ✅        | ❌     |
 | [`wide-arithmetic`]                     | ✅        | ❌     |
 | [`custom-page-sizes`]                   | ✅        | ❌     |
-| [`exception-handling`]                  | 🚧        | ❌     |
+| [`exception-handling`]                  | ✅        | ❌     |
 | [`stack-switching`]                     | ❌        | ❌     |
 
 ##### riscv64
@@ -303,7 +304,7 @@ here is:
 | [`gc`]                                  | ✅        | ❌     |
 | [`wide-arithmetic`]                     | ✅        | ❌     |
 | [`custom-page-sizes`]                   | ✅        | ❌     |
-| [`exception-handling`]                  | 🚧        | ❌     |
+| [`exception-handling`]                  | ✅        | ❌     |
 | [`stack-switching`]                     | ❌        | ❌     |
 
 ##### Pulley
@@ -333,7 +334,7 @@ emitting Pulley bytecode.
 | [`gc`]                                  | ✅        | ❌     |
 | [`wide-arithmetic`]                     | ✅        | ❌     |
 | [`custom-page-sizes`]                   | ✅        | ❌     |
-| [`exception-handling`]                  | 🚧        | ❌     |
+| [`exception-handling`]                  | ✅        | ❌     |
 | [`stack-switching`]                     | ❌        | ❌     |
 
 [^a]: Winch supports some features of the [`reference-types`] proposal such as

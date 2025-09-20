@@ -5,7 +5,7 @@ pub use emit_state::EmitState;
 use crate::binemit::{Addend, CodeOffset, Reloc};
 use crate::ir::{ExternalName, LibCall, TrapCode, Type, types};
 use crate::isa::x64::abi::X64ABIMachineSpec;
-use crate::isa::x64::inst::regs::{pretty_print_reg, show_ireg_sized};
+use crate::isa::x64::inst::regs::pretty_print_reg;
 use crate::isa::x64::settings as x64_settings;
 use crate::isa::{CallConv, FunctionAlignment};
 use crate::{CodegenError, CodegenResult, settings};
@@ -105,7 +105,8 @@ impl Inst {
             | Inst::MachOTlsGetAddr { .. }
             | Inst::CoffTlsGetAddr { .. }
             | Inst::Unwind { .. }
-            | Inst::DummyUse { .. } => true,
+            | Inst::DummyUse { .. }
+            | Inst::LabelAddress { .. } => true,
 
             Inst::Atomic128RmwSeq { .. } | Inst::Atomic128XchgSeq { .. } => emit_info.cmpxchg16b(),
 
@@ -522,7 +523,7 @@ impl PrettyPrint for Inst {
 
             Inst::MovFromPReg { src, dst } => {
                 let src: Reg = (*src).into();
-                let src = regs::show_ireg_sized(src, 8);
+                let src = pretty_print_reg(src, 8);
                 let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
                 let op = ljustify("movq".to_string());
                 format!("{op} {src}, {dst}")
@@ -531,7 +532,7 @@ impl PrettyPrint for Inst {
             Inst::MovToPReg { src, dst } => {
                 let src = pretty_print_reg(src.to_reg(), 8);
                 let dst: Reg = (*dst).into();
-                let dst = regs::show_ireg_sized(dst, 8);
+                let dst = pretty_print_reg(dst, 8);
                 let op = ljustify("movq".to_string());
                 format!("{op} {src}, {dst}")
             }
@@ -606,7 +607,7 @@ impl PrettyPrint for Inst {
                 let tmp = pretty_print_reg(tmp.to_reg().to_reg(), 8);
                 let mut s = format!("return_call_known {dest:?} ({new_stack_arg_size}) tmp={tmp}");
                 for ret in uses {
-                    let preg = regs::show_reg(ret.preg);
+                    let preg = pretty_print_reg(ret.preg, 8);
                     let vreg = pretty_print_reg(ret.vreg, 8);
                     write!(&mut s, " {vreg}={preg}").unwrap();
                 }
@@ -625,7 +626,7 @@ impl PrettyPrint for Inst {
                 let mut s =
                     format!("return_call_unknown {callee} ({new_stack_arg_size}) tmp={tmp}");
                 for ret in uses {
-                    let preg = regs::show_reg(ret.preg);
+                    let preg = pretty_print_reg(ret.preg, 8);
                     let vreg = pretty_print_reg(ret.vreg, 8);
                     write!(&mut s, " {vreg}={preg}").unwrap();
                 }
@@ -635,7 +636,7 @@ impl PrettyPrint for Inst {
             Inst::Args { args } => {
                 let mut s = "args".to_string();
                 for arg in args {
-                    let preg = regs::show_reg(arg.preg);
+                    let preg = pretty_print_reg(arg.preg, 8);
                     let def = pretty_print_reg(arg.vreg.to_reg(), 8);
                     write!(&mut s, " {def}={preg}").unwrap();
                 }
@@ -645,7 +646,7 @@ impl PrettyPrint for Inst {
             Inst::Rets { rets } => {
                 let mut s = "rets".to_string();
                 for ret in rets {
-                    let preg = regs::show_reg(ret.preg);
+                    let preg = pretty_print_reg(ret.preg, 8);
                     let vreg = pretty_print_reg(ret.vreg, 8);
                     write!(&mut s, " {vreg}={preg}").unwrap();
                 }
@@ -808,7 +809,7 @@ impl PrettyPrint for Inst {
 
                 let mut s = format!("{dst} = coff_tls_get_addr {symbol:?}");
                 if tmp.is_virtual() {
-                    let tmp = show_ireg_sized(tmp, 8);
+                    let tmp = pretty_print_reg(tmp, 8);
                     write!(&mut s, ", {tmp}").unwrap();
                 };
 
@@ -820,6 +821,11 @@ impl PrettyPrint for Inst {
             Inst::DummyUse { reg } => {
                 let reg = pretty_print_reg(*reg, 8);
                 format!("dummy_use {reg}")
+            }
+
+            Inst::LabelAddress { dst, label } => {
+                let dst = pretty_print_reg(dst.to_reg().to_reg(), 8);
+                format!("label_address {dst}, {label:?}")
             }
 
             Inst::External { inst } => {
@@ -1162,7 +1168,7 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             // Windows) use different TLS strategies.
             let mut clobbers =
                 X64ABIMachineSpec::get_regs_clobbered_by_call(CallConv::SystemV, false);
-            clobbers.remove(regs::gpr_preg(regs::ENC_RAX));
+            clobbers.remove(regs::gpr_preg(asm::gpr::enc::RAX));
             collector.reg_clobbers(clobbers);
         }
 
@@ -1181,6 +1187,10 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
 
         Inst::DummyUse { reg } => {
             collector.reg_use(reg);
+        }
+
+        Inst::LabelAddress { dst, .. } => {
+            collector.reg_def(dst);
         }
 
         Inst::External { inst } => {
@@ -1278,6 +1288,19 @@ impl MachInst for Inst {
         match self {
             Self::Args { .. } => true,
             _ => false,
+        }
+    }
+
+    fn call_type(&self) -> CallType {
+        match self {
+            Inst::CallKnown { .. }
+            | Inst::CallUnknown { .. }
+            | Inst::ElfTlsGetAddr { .. }
+            | Inst::MachOTlsGetAddr { .. } => CallType::Regular,
+
+            Inst::ReturnCallKnown { .. } | Inst::ReturnCallUnknown { .. } => CallType::TailCall,
+
+            _ => CallType::None,
         }
     }
 

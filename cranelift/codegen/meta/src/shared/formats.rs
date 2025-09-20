@@ -43,6 +43,7 @@ pub(crate) struct Formats {
     pub(crate) unary_ieee64: Rc<InstructionFormat>,
     pub(crate) unary_imm: Rc<InstructionFormat>,
     pub(crate) custom: Rc<InstructionFormat>,
+    pub(crate) exception_handler_address: Rc<InstructionFormat>,
 }
 
 impl Formats {
@@ -221,6 +222,11 @@ impl Formats {
                 .value()
                 .value()
                 .imm(&imm.trapcode)
+                .build(),
+
+            exception_handler_address: Builder::new("ExceptionHandlerAddress")
+                .raw_block()
+                .imm(&imm.imm64)
                 .build(),
         }
     }

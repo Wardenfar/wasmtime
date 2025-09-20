@@ -11,9 +11,9 @@ use crate::runtime::component::ComponentInstanceId;
 use crate::runtime::vm::instance::{InstanceLayout, OwnedInstance, OwnedVMContext};
 use crate::runtime::vm::vmcontext::VMFunctionBody;
 use crate::runtime::vm::{
-    SendSyncPtr, VMArrayCallFunction, VMFuncRef, VMGlobalDefinition, VMMemoryDefinition,
-    VMOpaqueContext, VMStore, VMStoreRawPtr, VMTableImport, VMWasmCallFunction, ValRaw, VmPtr,
-    VmSafe,
+    HostResult, SendSyncPtr, VMArrayCallFunction, VMFuncRef, VMGlobalDefinition,
+    VMMemoryDefinition, VMOpaqueContext, VMStore, VMStoreRawPtr, VMTableImport, VMWasmCallFunction,
+    ValRaw, VmPtr, VmSafe, catch_unwind_and_record_trap,
 };
 use crate::store::InstanceId;
 use alloc::alloc::Layout;
@@ -203,6 +203,10 @@ impl ComponentInstance {
     /// Converts the `vmctx` provided into a `ComponentInstance` and runs the
     /// provided closure with that instance.
     ///
+    /// This function will also catch any failures that `f` produces and returns
+    /// an appropriate ABI value to return to wasm. This includes normal errors
+    /// such as traps as well as Rust-side panics which require wasm to unwind.
+    ///
     /// # Unsafety
     ///
     /// This is `unsafe` because `vmctx` cannot be guaranteed to be a valid
@@ -210,17 +214,17 @@ impl ComponentInstance {
     /// mutable reference at this time to the instance from `vmctx`. Note that
     /// it must be also safe to borrow the store mutably, meaning it can't
     /// already be in use elsewhere.
-    pub unsafe fn from_vmctx<R>(
+    pub unsafe fn enter_host_from_wasm<R>(
         vmctx: NonNull<VMComponentContext>,
         f: impl FnOnce(&mut dyn VMStore, Instance) -> R,
-    ) -> R {
+    ) -> R::Abi
+    where
+        R: HostResult,
+    {
         // SAFETY: it's a contract of this function that `vmctx` is a valid
         // allocation which can go backwards to a `ComponentInstance`.
-        let mut ptr = unsafe {
-            vmctx
-                .byte_sub(mem::size_of::<ComponentInstance>())
-                .cast::<ComponentInstance>()
-        };
+        let mut ptr = unsafe { Self::from_vmctx(vmctx) };
+
         // SAFETY: it's a contract of this function that it's safe to use `ptr`
         // as a mutable reference.
         let reference = unsafe { ptr.as_mut() };
@@ -230,7 +234,24 @@ impl ComponentInstance {
         let store = unsafe { &mut *reference.store.0.as_ptr() };
 
         let instance = Instance::from_wasmtime(store, reference.id);
-        f(store, instance)
+        catch_unwind_and_record_trap(store, |store| f(store, instance))
+    }
+
+    /// Returns the `InstanceId` associated with the `vmctx` provided.
+    ///
+    /// # Safety
+    ///
+    /// The `vmctx` pointer must be a valid pointer and allocation within a
+    /// `ComponentInstance`. See `Instance::from_vmctx` for some more
+    /// information.
+    unsafe fn from_vmctx(vmctx: NonNull<VMComponentContext>) -> NonNull<ComponentInstance> {
+        // SAFETY: it's a contract of this function that `vmctx` is a valid
+        // pointer to do this pointer arithmetic on.
+        unsafe {
+            vmctx
+                .byte_sub(mem::size_of::<ComponentInstance>())
+                .cast::<ComponentInstance>()
+        }
     }
 
     /// Returns the `InstanceId` associated with the `vmctx` provided.
@@ -244,13 +265,7 @@ impl ComponentInstance {
     ) -> ComponentInstanceId {
         // SAFETY: it's a contract of this function that `vmctx` is a valid
         // pointer with a `ComponentInstance` in front which can be read.
-        unsafe {
-            vmctx
-                .byte_sub(mem::size_of::<ComponentInstance>())
-                .cast::<ComponentInstance>()
-                .as_ref()
-                .id
-        }
+        unsafe { Self::from_vmctx(vmctx).as_ref().id }
     }
 
     /// Returns the layout corresponding to what would be an allocation of a
@@ -874,6 +889,18 @@ impl ComponentInstance {
         // SAFETY: we've chosen the `Pin` guarantee of `Self` to not apply to
         // the map returned.
         unsafe { &mut self.get_unchecked_mut().concurrent_state }
+    }
+
+    pub(crate) fn check_may_leave(
+        &self,
+        instance: RuntimeComponentInstanceIndex,
+    ) -> anyhow::Result<()> {
+        let flags = self.instance_flags(instance);
+        if unsafe { flags.may_leave() } {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(crate::Trap::CannotLeaveComponent))
+        }
     }
 }
 

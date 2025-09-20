@@ -32,12 +32,30 @@ pub mod limits {
 /// of the wasmtime repository.
 pub fn find_tests(root: &Path) -> Result<Vec<WastTest>> {
     let mut tests = Vec::new();
-    add_tests(&mut tests, &root.join("tests/spec_testsuite"), false)?;
-    add_tests(&mut tests, &root.join("tests/misc_testsuite"), true)?;
+    add_tests(
+        &mut tests,
+        &root.join("tests/spec_testsuite"),
+        &FindConfig::Infer(spec_test_config),
+    )?;
+    add_tests(
+        &mut tests,
+        &root.join("tests/misc_testsuite"),
+        &FindConfig::InTest,
+    )?;
+    add_tests(
+        &mut tests,
+        &root.join("tests/component-model/test"),
+        &FindConfig::Infer(component_test_config),
+    )?;
     Ok(tests)
 }
 
-fn add_tests(tests: &mut Vec<WastTest>, path: &Path, has_config: bool) -> Result<()> {
+enum FindConfig {
+    InTest,
+    Infer(fn(&Path) -> TestConfig),
+}
+
+fn add_tests(tests: &mut Vec<WastTest>, path: &Path, config: &FindConfig) -> Result<()> {
     for entry in path.read_dir().context("failed to read directory")? {
         let entry = entry.context("failed to read directory entry")?;
         let path = entry.path();
@@ -46,7 +64,7 @@ fn add_tests(tests: &mut Vec<WastTest>, path: &Path, has_config: bool) -> Result
             .context("failed to get file type")?
             .is_dir()
         {
-            add_tests(tests, &path, has_config).context("failed to read sub-directory")?;
+            add_tests(tests, &path, config).context("failed to read sub-directory")?;
             continue;
         }
 
@@ -56,11 +74,10 @@ fn add_tests(tests: &mut Vec<WastTest>, path: &Path, has_config: bool) -> Result
 
         let contents =
             fs::read_to_string(&path).with_context(|| format!("failed to read test: {path:?}"))?;
-        let config = if has_config {
-            parse_test_config(&contents, ";;!")
-                .with_context(|| format!("failed to parse test configuration: {path:?}"))?
-        } else {
-            spec_test_config(&path)
+        let config = match config {
+            FindConfig::InTest => parse_test_config(&contents, ";;!")
+                .with_context(|| format!("failed to parse test configuration: {path:?}"))?,
+            FindConfig::Infer(f) => f(&path),
         };
         tests.push(WastTest {
             path,
@@ -108,22 +125,8 @@ fn spec_test_config(test: &Path) -> TestConfig {
             ret.memory64 = Some(true);
             ret.tail_call = Some(true);
             ret.extended_const = Some(true);
+            ret.exceptions = Some(true);
 
-            // Wasmtime, at the current date, has incomplete support for the
-            // exceptions proposal. Instead of flagging the entire test suite
-            // as needing this proposal try to filter down per-test to what
-            // exactly needs this. Other tests aren't expected to need
-            // exceptions.
-            if test.ends_with("tag.wast")
-                || test.ends_with("instance.wast")
-                || test.ends_with("throw.wast")
-                || test.ends_with("throw_ref.wast")
-                || test.ends_with("try_table.wast")
-                || test.ends_with("ref_null.wast")
-                || test.ends_with("imports.wast")
-            {
-                ret.exceptions = Some(true);
-            }
             if test.parent().unwrap().ends_with("legacy") {
                 ret.legacy_exceptions = Some(true);
             }
@@ -147,6 +150,22 @@ fn spec_test_config(test: &Path) -> TestConfig {
         None => {
             ret.reference_types = Some(true);
             ret.simd = Some(true);
+        }
+    }
+
+    ret
+}
+
+fn component_test_config(test: &Path) -> TestConfig {
+    let mut ret = TestConfig::default();
+    ret.spec_test = Some(true);
+    ret.reference_types = Some(true);
+    ret.multi_memory = Some(true);
+
+    if let Some(parent) = test.parent() {
+        if parent.ends_with("async") {
+            ret.component_model_async = Some(true);
+            ret.component_model_async_builtins = Some(true);
         }
     }
 
@@ -310,7 +329,7 @@ impl Compiler {
             Compiler::CraneliftNative => config.legacy_exceptions(),
 
             Compiler::Winch => {
-                let unsupported_base = config.gc()
+                if config.gc()
                     || config.tail_call()
                     || config.function_references()
                     || config.gc()
@@ -319,20 +338,19 @@ impl Compiler {
                     || config.exceptions()
                     || config.legacy_exceptions()
                     || config.stack_switching()
-                    || config.legacy_exceptions();
-
-                if cfg!(target_arch = "x86_64") {
-                    return unsupported_base;
+                    || config.legacy_exceptions()
+                    || config.component_model_async()
+                {
+                    return true;
                 }
 
                 if cfg!(target_arch = "aarch64") {
-                    return unsupported_base
-                        || config.wide_arithmetic()
+                    return config.wide_arithmetic()
                         || (config.simd() && !config.spec_test())
                         || config.threads();
                 }
 
-                true
+                !cfg!(target_arch = "x86_64")
             }
 
             Compiler::CraneliftPulley => {
@@ -642,20 +660,15 @@ impl WastTest {
             }
         }
 
-        // For the exceptions proposal these tests use instructions and such
-        // which aren't implemented yet so these are expected to fail.
-        if self.config.exceptions() {
-            let unsupported = [
-                "ref_null.wast",
-                "throw.wast",
-                "rethrow.wast",
-                "throw_ref.wast",
-                "try_table.wast",
-                "instance.wast",
-            ];
-            if unsupported.iter().any(|part| self.path.ends_with(part)) {
-                return true;
-            }
+        let failing_component_model_tests = [
+            // FIXME(#11683)
+            "component-model/test/values/trap-in-post-return.wast",
+        ];
+        if failing_component_model_tests
+            .iter()
+            .any(|part| self.path.ends_with(part))
+        {
+            return true;
         }
 
         false

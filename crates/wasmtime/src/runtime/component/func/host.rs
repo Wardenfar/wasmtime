@@ -250,7 +250,7 @@ where
     // the component is disallowed, for example, when the `realloc` function
     // calls a canonical import.
     if unsafe { !flags.may_leave() } {
-        bail!("cannot leave component instance");
+        return Err(anyhow!(crate::Trap::CannotLeaveComponent));
     }
 
     let types = vminstance.component().types().clone();
@@ -344,7 +344,7 @@ where
             HostResult::Done(result) => result?,
             #[cfg(feature = "component-model-async")]
             HostResult::Future(future) => {
-                instance.poll_and_block(store.0.traitobj_mut(), future, caller_instance)?
+                instance.poll_and_block(store.0, future, caller_instance)?
             }
         };
 
@@ -683,15 +683,12 @@ where
 {
     let cx = unsafe { VMComponentContext::from_opaque(cx) };
     unsafe {
-        ComponentInstance::from_vmctx(cx, |store, instance| {
+        ComponentInstance::enter_host_from_wasm(cx, |store, instance| {
             let mut store = store.unchecked_context_mut();
-
-            crate::runtime::vm::catch_unwind_and_record_trap(|| {
-                store.0.call_hook(CallHook::CallingHost)?;
-                let res = func(store.as_context_mut(), instance);
-                store.0.call_hook(CallHook::ReturningFromHost)?;
-                res
-            })
+            store.0.call_hook(CallHook::CallingHost)?;
+            let res = func(store.as_context_mut(), instance);
+            store.0.call_hook(CallHook::ReturningFromHost)?;
+            res
         })
     }
 }
@@ -727,7 +724,7 @@ where
     // the component is disallowed, for example, when the `realloc` function
     // calls a canonical import.
     if unsafe { !flags.may_leave() } {
-        bail!("cannot leave component instance");
+        return Err(anyhow!(crate::Trap::CannotLeaveComponent));
     }
 
     let types = instance.id().get(store.0).component().types().clone();
@@ -829,8 +826,7 @@ where
             params_and_results,
             result_start,
         );
-        let result_vals =
-            instance.poll_and_block(store.0.traitobj_mut(), future, caller_instance)?;
+        let result_vals = instance.poll_and_block(store.0, future, caller_instance)?;
         let result_vals = &result_vals[result_start..];
 
         unsafe {

@@ -5,7 +5,7 @@ use crate::oracles::{StoreLimits, Timeout};
 use anyhow::Result;
 use arbitrary::{Arbitrary, Unstructured};
 use std::time::Duration;
-use wasmtime::{Engine, Module, MpkEnabled, Store};
+use wasmtime::{Enabled, Engine, Module, Store};
 use wasmtime_test_util::wast::{WastConfig, WastTest, limits};
 
 /// Configuration for `wasmtime::Config` and generated modules for a session of
@@ -75,7 +75,7 @@ impl Config {
             pooling.total_memories = config.max_memories as u32;
             pooling.max_memory_size = 10 << 16;
             pooling.max_memories_per_module = config.max_memories as u32;
-            if pooling.memory_protection_keys == MpkEnabled::Auto
+            if pooling.memory_protection_keys == Enabled::Auto
                 && pooling.max_memory_protection_keys > 1
             {
                 pooling.total_memories =
@@ -141,7 +141,7 @@ impl Config {
             component_model_gc,
             simd,
             exceptions,
-            legacy_exceptions,
+            legacy_exceptions: _,
 
             hogs_memory: _,
             nan_canonicalization: _,
@@ -161,7 +161,6 @@ impl Config {
             component_model_async_stackful.unwrap_or(false);
         self.module_config.component_model_error_context =
             component_model_error_context.unwrap_or(false);
-        self.module_config.legacy_exceptions = legacy_exceptions.unwrap_or(false);
         self.module_config.component_model_gc = component_model_gc.unwrap_or(false);
 
         // Enable/disable proposals that wasm-smith has knobs for which will be
@@ -305,7 +304,6 @@ impl Config {
             Some(self.module_config.config.shared_everything_threads_enabled);
         cfg.wasm.wide_arithmetic = Some(self.module_config.config.wide_arithmetic_enabled);
         cfg.wasm.exceptions = Some(self.module_config.config.exceptions_enabled);
-        cfg.wasm.legacy_exceptions = Some(self.module_config.legacy_exceptions);
         if !self.module_config.config.simd_enabled {
             cfg.wasm.relaxed_simd = Some(false);
         }
@@ -461,7 +459,12 @@ impl Config {
     /// Configures a store based on this configuration.
     pub fn configure_store(&self, store: &mut Store<StoreLimits>) {
         store.limiter(|s| s as &mut dyn wasmtime::ResourceLimiter);
+        self.configure_store_epoch_and_fuel(store);
+    }
 
+    /// Configures everything unrelated to `T` in a store, such as epochs and
+    /// fuel.
+    pub fn configure_store_epoch_and_fuel<T>(&self, store: &mut Store<T>) {
         // Configure the store to never abort by default, that is it'll have
         // max fuel or otherwise trap on an epoch change but the epoch won't
         // ever change.
@@ -664,6 +667,7 @@ impl WasmtimeConfig {
                 config.config.gc_enabled = false;
                 config.config.tail_call_enabled = false;
                 config.config.reference_types_enabled = false;
+                config.config.exceptions_enabled = false;
                 config.function_references_enabled = false;
 
                 // Winch's SIMD implementations require AVX and AVX2.
@@ -834,20 +838,18 @@ impl OptLevel {
 #[derive(Arbitrary, Clone, Debug, PartialEq, Eq, Hash)]
 enum RegallocAlgorithm {
     Backtracking,
-    SinglePass,
+    // FIXME(#11544 and #11545): rename back to `SinglePass` and handle below
+    // when those issues are fixed
+    TemporarilyDisabledSinglePass,
 }
 
 impl RegallocAlgorithm {
     fn to_wasmtime(&self) -> wasmtime::RegallocAlgorithm {
         match self {
             RegallocAlgorithm::Backtracking => wasmtime::RegallocAlgorithm::Backtracking,
-            // Note: we have disabled `single_pass` for now because of
-            // its limitations w.r.t. exception handling
-            // (https://github.com/bytecodealliance/regalloc2/issues/217). To
-            // avoid breaking all existing fuzzbugs by changing the
-            // `arbitrary` mappings, we keep the `RegallocAlgorithm`
-            // enum as it is and remap here to `Backtracking`.
-            RegallocAlgorithm::SinglePass => wasmtime::RegallocAlgorithm::Backtracking,
+            RegallocAlgorithm::TemporarilyDisabledSinglePass => {
+                wasmtime::RegallocAlgorithm::Backtracking
+            }
         }
     }
 }

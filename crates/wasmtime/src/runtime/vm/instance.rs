@@ -14,10 +14,10 @@ use crate::runtime::vm::vmcontext::{
     VMTableDefinition, VMTableImport, VMTagDefinition, VMTagImport,
 };
 use crate::runtime::vm::{
-    GcStore, Imports, ModuleRuntimeInfo, SendSyncPtr, VMGlobalKind, VMStore, VMStoreRawPtr, VmPtr,
-    VmSafe, WasmFault,
+    GcStore, HostResult, Imports, ModuleRuntimeInfo, SendSyncPtr, VMGlobalKind, VMStore,
+    VMStoreRawPtr, VmPtr, VmSafe, WasmFault, catch_unwind_and_record_trap,
 };
-use crate::store::{InstanceId, StoreId, StoreInstanceId, StoreOpaque};
+use crate::store::{InstanceId, StoreId, StoreInstanceId, StoreOpaque, StoreResourceLimiter};
 use alloc::sync::Arc;
 use core::alloc::Layout;
 use core::marker;
@@ -40,130 +40,6 @@ use wasmtime_wmemcheck::Wmemcheck;
 
 mod allocator;
 pub use allocator::*;
-
-/// The pair of an instance and a raw pointer its associated store.
-///
-/// ### Safety
-///
-/// > **Note**: it's known that the documentation below is documenting an
-/// > unsound pattern and we're in the process of fixing it, but it'll take
-/// > some time to refactor. Notably `unpack_mut` is not sound because the
-/// > returned store pointer can be used to accidentally alias the instance
-/// > pointer returned as well.
-///
-/// Getting a borrow of a vmctx's store is one of the fundamental bits of unsafe
-/// code in Wasmtime. No matter how we architect the runtime, some kind of
-/// unsafe conversion from a raw vmctx pointer that Wasm is using into a Rust
-/// struct must happen.
-///
-/// It is our responsibility to ensure that multiple (exclusive) borrows of the
-/// vmctx's store never exist at the same time. The distinction between the
-/// `Instance` type (which doesn't expose its underlying vmctx pointer or a way
-/// to get a borrow of its associated store) and this type (which does) is
-/// designed to help with that.
-///
-/// Going from a `*mut VMContext` to a `&mut StoreInner<T>` is naturally unsafe
-/// due to the raw pointer usage, but additionally the `T` type parameter needs
-/// to be the same `T` that was used to define the `dyn VMStore` trait object
-/// that was stuffed into the vmctx.
-///
-/// ### Usage
-///
-/// Usage generally looks like:
-///
-/// 1. You get a raw `*mut VMContext` from Wasm
-///
-/// 2. You call `InstanceAndStore::from_vmctx` on that raw pointer
-///
-/// 3. You then call `InstanceAndStore::unpack_mut` (or another helper) to get
-///    the underlying `Pin<&mut Instance>` and `&mut dyn VMStore` (or `&mut
-///    StoreInner<T>`).
-///
-/// 4. You then use whatever `Instance` methods you need to, each of which take
-///    a store argument as necessary.
-///
-/// In step (4) you no longer need to worry about double exclusive borrows of
-/// the store, so long as you don't do (1-2) again. Note also that the borrow
-/// checker prevents repeating step (3) if you never repeat (1-2). In general,
-/// steps (1-3) should be done in a single, common, internally-unsafe,
-/// plumbing-code bottleneck and the raw pointer should never be exposed to Rust
-/// code that does (4) after the `InstanceAndStore` is created. Follow this
-/// pattern, and everything using the resulting `Instance` and `Store` can be
-/// safe code (at least, with regards to accessing the store itself).
-///
-/// As an illustrative example, the common plumbing code for our various
-/// libcalls performs steps (1-3) before calling into each actual libcall
-/// implementation function that does (4). The plumbing code hides the raw vmctx
-/// pointer and never gives out access to it to the libcall implementation
-/// functions, nor does an `Instance` expose its internal vmctx pointer, which
-/// would allow unsafely repeating steps (1-2).
-#[repr(transparent)]
-pub struct InstanceAndStore {
-    instance: Instance,
-}
-
-impl InstanceAndStore {
-    /// Converts the provided `*mut VMContext` to an `InstanceAndStore`
-    /// reference and calls the provided closure with it.
-    ///
-    /// This method will move the `vmctx` pointer backwards to point to the
-    /// original `Instance` that precedes it. The closure is provided a
-    /// temporary reference to the `InstanceAndStore` with a constrained
-    /// lifetime to ensure that it doesn't accidentally escape.
-    ///
-    /// # Safety
-    ///
-    /// Callers must validate that the `vmctx` pointer is a valid allocation and
-    /// that it's valid to acquire `&mut InstanceAndStore` at this time. For
-    /// example this can't be called twice on the same `VMContext` to get two
-    /// active mutable borrows to the same `InstanceAndStore`.
-    ///
-    /// See also the safety discussion in this type's documentation.
-    #[inline]
-    pub(crate) unsafe fn from_vmctx<R>(
-        vmctx: NonNull<VMContext>,
-        f: impl for<'a> FnOnce(&'a mut Self) -> R,
-    ) -> R {
-        const _: () = assert!(mem::size_of::<InstanceAndStore>() == mem::size_of::<Instance>());
-        // SAFETY: The validity of this `byte_sub` relies on `vmctx` being a
-        // valid allocation which is itself a contract of this function.
-        let mut ptr = unsafe {
-            vmctx
-                .byte_sub(mem::size_of::<Instance>())
-                .cast::<InstanceAndStore>()
-        };
-
-        // SAFETY: the ability to interpret `vmctx` as a safe pointer and
-        // continue on is a contract of this function itself, so the safety here
-        // is effectively up to callers.
-        unsafe { f(ptr.as_mut()) }
-    }
-
-    /// Unpacks this `InstanceAndStore` into its underlying `Instance` and `dyn
-    /// VMStore`.
-    #[inline]
-    pub(crate) fn unpack_mut(&mut self) -> (Pin<&mut Instance>, &mut dyn VMStore) {
-        unsafe {
-            let store = &mut *self.store_ptr();
-            (Pin::new_unchecked(&mut self.instance), store)
-        }
-    }
-
-    /// Gets a pointer to this instance's `Store` which was originally
-    /// configured on creation.
-    ///
-    /// # Panics
-    ///
-    /// May panic if the originally configured store was `None`. That can happen
-    /// for host functions so host functions can't be queried what their
-    /// original `Store` was since it's just retained as null (since host
-    /// functions are shared amongst threads and don't all share the same
-    /// store).
-    #[inline]
-    fn store_ptr(&self) -> *mut dyn VMStore {
-        self.instance.store.unwrap().0.as_ptr()
-    }
-}
 
 /// A type that roughly corresponds to a WebAssembly instance, but is also used
 /// for host-defined objects.
@@ -298,7 +174,7 @@ impl Instance {
             dropped_data,
             #[cfg(feature = "wmemcheck")]
             wmemcheck_state: {
-                if req.wmemcheck {
+                if req.store.engine().config().wmemcheck {
                     let size = memory_tys
                         .iter()
                         .next()
@@ -328,6 +204,91 @@ impl Instance {
         ret
     }
 
+    /// Converts a raw `VMContext` pointer into a raw `Instance` pointer.
+    ///
+    /// # Safety
+    ///
+    /// Calling this function safely requires that `vmctx` is a valid allocation
+    /// of a `VMContext` which is derived from `Instance::new`. To safely
+    /// convert the returned raw pointer into a safe instance pointer callers
+    /// will also want to uphold guarantees such as:
+    ///
+    /// * The instance should not be in use elsewhere. For example you can't
+    ///   call this function twice, turn both raw pointers into safe pointers,
+    ///   and then use both safe pointers.
+    /// * There should be no other active mutable borrow to any other instance
+    ///   within the same store. Note that this is not restricted to just this
+    ///   instance pointer, but to all instances in a store. Instances can
+    ///   safely traverse to other instances "laterally" meaning that a mutable
+    ///   borrow on one is a mutable borrow on all.
+    /// * There should be no active mutable borrow on the store accessible at
+    ///   the same time the instance is turned. Instances are owned by a store
+    ///   and a store can be used to acquire a safe instance borrow at any time.
+    /// * The lifetime of the usage of the instance should not be unnecessarily
+    ///   long, for example it cannot be `'static`.
+    ///
+    /// Other entrypoints exist for converting from a raw `VMContext` to a safe
+    /// pointer such as:
+    ///
+    /// * `Instance::enter_host_from_wasm`
+    /// * `Instance::sibling_vmctx{,_mut}`
+    ///
+    /// These place further restrictions on the API signature to satisfy some of
+    /// the above points.
+    #[inline]
+    pub(crate) unsafe fn from_vmctx(vmctx: NonNull<VMContext>) -> NonNull<Instance> {
+        // SAFETY: The validity of `byte_sub` relies on `vmctx` being a valid
+        // allocation.
+        unsafe {
+            vmctx
+                .byte_sub(mem::size_of::<Instance>())
+                .cast::<Instance>()
+        }
+    }
+
+    /// Encapsulated entrypoint to the host from WebAssembly, converting a raw
+    /// `VMContext` pointer into a `VMStore` plus an `InstanceId`.
+    ///
+    /// This is an entrypoint for core wasm entering back into the host. This is
+    /// used for both host functions and libcalls for example. This will execute
+    /// the closure `f` with safer Internal types than a raw `VMContext`
+    /// pointer.
+    ///
+    /// The closure `f` will have its errors caught, handled, and translated to
+    /// an ABI-safe return value to give back to wasm. This includes both normal
+    /// errors such as traps as well as panics.
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure that `vmctx` is a valid allocation and is safe to
+    /// dereference at this time. That's generally only true when it's a
+    /// wasm-provided value and this is the first function called after entering
+    /// the host. Otherwise this could unsafely alias the store with a mutable
+    /// pointer, for example.
+    #[inline]
+    pub(crate) unsafe fn enter_host_from_wasm<R>(
+        vmctx: NonNull<VMContext>,
+        f: impl FnOnce(&mut dyn VMStore, InstanceId) -> R,
+    ) -> R::Abi
+    where
+        R: HostResult,
+    {
+        // SAFETY: It's a contract of this function that `vmctx` is a valid
+        // pointer with neither the store nor other instances actively in use
+        // when this is called, so it should be safe to acquire a mutable
+        // pointer to the store and read the instance pointer.
+        let (store, instance) = unsafe {
+            let instance = Instance::from_vmctx(vmctx);
+            let instance = instance.as_ref();
+            let store = &mut *instance.store.unwrap().0.as_ptr();
+            (store, instance.id)
+        };
+
+        // Thread the `store` and `instance` through panic/trap infrastructure
+        // back into `f`.
+        catch_unwind_and_record_trap(store, |store| f(store, instance))
+    }
+
     /// Converts the provided `*mut VMContext` to an `Instance` pointer and
     /// returns it with the same lifetime as `self`.
     ///
@@ -341,12 +302,8 @@ impl Instance {
     #[inline]
     unsafe fn sibling_vmctx<'a>(&'a self, vmctx: NonNull<VMContext>) -> &'a Instance {
         // SAFETY: it's a contract of this function itself that `vmctx` is a
-        // valid pointer such that this pointer arithmetic is valid.
-        let ptr = unsafe {
-            vmctx
-                .byte_sub(mem::size_of::<Instance>())
-                .cast::<Instance>()
-        };
+        // valid pointer. Additionally with `self` being a
+        let ptr = unsafe { Instance::from_vmctx(vmctx) };
         // SAFETY: it's a contract of this function itself that `vmctx` is a
         // valid pointer to dereference. Additionally the lifetime of the return
         // value is constrained to be the same as `self` to avoid granting a
@@ -375,11 +332,7 @@ impl Instance {
     ) -> Pin<&'a mut Instance> {
         // SAFETY: it's a contract of this function itself that `vmctx` is a
         // valid pointer such that this pointer arithmetic is valid.
-        let mut ptr = unsafe {
-            vmctx
-                .byte_sub(mem::size_of::<Instance>())
-                .cast::<Instance>()
-        };
+        let mut ptr = unsafe { Instance::from_vmctx(vmctx) };
 
         // SAFETY: it's a contract of this function itself that `vmctx` is a
         // valid pointer to dereference. Additionally the lifetime of the return
@@ -550,32 +503,22 @@ impl Instance {
         unsafe { self.vmctx_plus_offset_mut(offset) }
     }
 
-    pub(crate) unsafe fn set_store(mut self: Pin<&mut Self>, store: Option<NonNull<dyn VMStore>>) {
+    pub(crate) unsafe fn set_store(mut self: Pin<&mut Self>, store: &StoreOpaque) {
         // FIXME: should be more targeted ideally with the `unsafe` than just
         // throwing this entire function in a large `unsafe` block.
         unsafe {
-            *self.as_mut().store_mut() = store.map(VMStoreRawPtr);
-            if let Some(mut store) = store {
-                let store = store.as_mut();
-                self.vm_store_context()
-                    .write(Some(store.vm_store_context_ptr().into()));
-                #[cfg(target_has_atomic = "64")]
-                {
-                    *self.as_mut().epoch_ptr() =
-                        Some(NonNull::from(store.engine().epoch_counter()).into());
-                }
+            *self.as_mut().store_mut() = Some(VMStoreRawPtr(store.traitobj()));
+            self.vm_store_context()
+                .write(Some(store.vm_store_context_ptr().into()));
+            #[cfg(target_has_atomic = "64")]
+            {
+                *self.as_mut().epoch_ptr() =
+                    Some(NonNull::from(store.engine().epoch_counter()).into());
+            }
 
-                if self.env_module().needs_gc_heap {
-                    self.as_mut().set_gc_heap(Some(store.unwrap_gc_store()));
-                } else {
-                    self.as_mut().set_gc_heap(None);
-                }
+            if self.env_module().needs_gc_heap {
+                self.as_mut().set_gc_heap(Some(store.unwrap_gc_store()));
             } else {
-                self.vm_store_context().write(None);
-                #[cfg(target_has_atomic = "64")]
-                {
-                    *self.as_mut().epoch_ptr() = None;
-                }
                 self.as_mut().set_gc_heap(None);
             }
         }
@@ -736,15 +679,18 @@ impl Instance {
     /// Returns `None` if memory can't be grown by the specified amount
     /// of pages. Returns `Some` with the old size in bytes if growth was
     /// successful.
-    pub(crate) fn memory_grow(
+    pub(crate) async fn memory_grow(
         mut self: Pin<&mut Self>,
-        store: &mut dyn VMStore,
+        limiter: Option<&mut StoreResourceLimiter<'_>>,
         idx: DefinedMemoryIndex,
         delta: u64,
     ) -> Result<Option<usize>, Error> {
         let memory = &mut self.as_mut().memories_mut()[idx].1;
 
-        let result = unsafe { memory.grow(delta, Some(store)) };
+        // SAFETY: this is the safe wrapper around `Memory::grow` because it
+        // automatically updates the `VMMemoryDefinition` in this instance after
+        // a growth operation below.
+        let result = unsafe { memory.grow(delta, limiter).await };
 
         // Update the state used by a non-shared Wasm memory in case the base
         // pointer and/or the length changed.
@@ -766,13 +712,13 @@ impl Instance {
     /// Performs a grow operation on the `table_index` specified using `grow`.
     ///
     /// This will handle updating the VMTableDefinition internally as necessary.
-    pub(crate) fn defined_table_grow(
+    pub(crate) async fn defined_table_grow(
         mut self: Pin<&mut Self>,
         table_index: DefinedTableIndex,
-        grow: impl FnOnce(&mut Table) -> Result<Option<usize>>,
+        grow: impl AsyncFnOnce(&mut Table) -> Result<Option<usize>>,
     ) -> Result<Option<usize>> {
         let table = self.as_mut().get_defined_table(table_index);
-        let result = grow(table);
+        let result = grow(table).await;
         let element = table.vmtable();
         self.set_table(table_index, element);
         result
@@ -935,21 +881,25 @@ impl Instance {
     ///
     /// Returns a `Trap` error when the range within the table is out of bounds
     /// or the range within the passive element is out of bounds.
-    pub(crate) fn table_init(
-        self: Pin<&mut Self>,
+    pub(crate) async fn table_init(
         store: &mut StoreOpaque,
+        limiter: Option<&mut StoreResourceLimiter<'_>>,
+        instance: InstanceId,
         table_index: TableIndex,
         elem_index: ElemIndex,
         dst: u64,
         src: u64,
         len: u64,
-    ) -> Result<(), Trap> {
+    ) -> Result<()> {
         let mut storage = None;
-        let elements = self.passive_element_segment(&mut storage, elem_index);
+        let elements = store
+            .instance(instance)
+            .passive_element_segment(&mut storage, elem_index);
         let mut const_evaluator = ConstExprEvaluator::default();
         Self::table_init_segment(
             store,
-            self.id,
+            limiter,
+            instance,
             &mut const_evaluator,
             table_index,
             elements,
@@ -957,10 +907,12 @@ impl Instance {
             src,
             len,
         )
+        .await
     }
 
-    pub(crate) fn table_init_segment(
+    pub(crate) async fn table_init_segment(
         store: &mut StoreOpaque,
+        mut limiter: Option<&mut StoreResourceLimiter<'_>>,
         elements_instance_id: InstanceId,
         const_evaluator: &mut ConstExprEvaluator,
         table_index: TableIndex,
@@ -968,7 +920,7 @@ impl Instance {
         dst: u64,
         src: u64,
         len: u64,
-    ) -> Result<(), Trap> {
+    ) -> Result<()> {
         // https://webassembly.github.io/bulk-memory-operations/core/exec/instructions.html#exec-table-init
 
         let store_id = store.id();
@@ -1015,11 +967,9 @@ impl Instance {
                     .ok_or(Trap::TableOutOfBounds)?;
                 let mut context = ConstEvalContext::new(elements_instance_id);
                 for (i, expr) in positions.zip(exprs) {
-                    let element = unsafe {
-                        const_evaluator
-                            .eval(&mut store, &mut context, expr)
-                            .expect("const expr should be valid")
-                    };
+                    let element = const_evaluator
+                        .eval(&mut store, limiter.as_deref_mut(), &mut context, expr)
+                        .await?;
                     table.set_(&mut store, i, element.ref_().unwrap()).unwrap();
                 }
             }
@@ -1306,7 +1256,7 @@ impl Instance {
         mut self: Pin<&mut Self>,
         module: &Module,
         offsets: &VMOffsets<HostPtr>,
-        store: StorePtr,
+        store: &StoreOpaque,
         imports: Imports,
     ) {
         assert!(ptr::eq(module, self.env_module().as_ref()));
@@ -1320,7 +1270,7 @@ impl Instance {
 
         // SAFETY: it's up to the caller to provide a valid store pointer here.
         unsafe {
-            self.as_mut().set_store(store.as_raw());
+            self.as_mut().set_store(store);
         }
 
         // Initialize shared types

@@ -45,9 +45,6 @@ pub struct ModuleTranslation<'data> {
     /// Module information.
     pub module: Module,
 
-    /// This module's index.
-    pub module_index: StaticModuleIndex,
-
     /// The input wasm binary.
     ///
     /// This can be useful, for example, when modules are parsed from a
@@ -115,8 +112,7 @@ impl<'data> ModuleTranslation<'data> {
     /// Create a new translation for the module with the given index.
     pub fn new(module_index: StaticModuleIndex) -> Self {
         Self {
-            module_index,
-            module: Module::default(),
+            module: Module::new(module_index),
             wasm: &[],
             function_body_inputs: PrimaryMap::default(),
             known_imported_functions: SecondaryMap::default(),
@@ -138,6 +134,11 @@ impl<'data> ModuleTranslation<'data> {
         self.types
             .as_ref()
             .expect("module type information to be available")
+    }
+
+    /// Get this translation's module's index.
+    pub fn module_index(&self) -> StaticModuleIndex {
+        self.module.module_index
     }
 }
 
@@ -354,7 +355,13 @@ impl<'a, 'data> ModuleEnvironment<'a, 'data> {
                         TypeRef::Tag(ty) => {
                             let index = TypeIndex::from_u32(ty.func_type_idx);
                             let signature = self.result.module.types[index];
-                            let tag = Tag { signature };
+                            let exception = self.types.define_exception_type_for_tag(
+                                signature.unwrap_module_type_index(),
+                            );
+                            let tag = Tag {
+                                signature,
+                                exception: EngineOrModuleTypeIndex::Module(exception),
+                            };
                             self.result.module.num_imported_tags += 1;
                             EntityType::Tag(tag)
                         }
@@ -426,7 +433,10 @@ impl<'a, 'data> ModuleEnvironment<'a, 'data> {
                     let sigindex = entry?.func_type_idx;
                     let ty = TypeIndex::from_u32(sigindex);
                     let interned_index = self.result.module.types[ty];
-                    self.result.module.push_tag(interned_index);
+                    let exception = self
+                        .types
+                        .define_exception_type_for_tag(interned_index.unwrap_module_type_index());
+                    self.result.module.push_tag(interned_index, exception);
                 }
             }
 

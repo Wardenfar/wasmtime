@@ -28,6 +28,7 @@ impl SpecInterpreter {
         config.custom_page_sizes_enabled = false;
         config.wide_arithmetic_enabled = false;
         config.extended_const_enabled = false;
+        config.exceptions_enabled = false;
 
         Self
     }
@@ -106,7 +107,8 @@ impl From<&DiffValue> for SpecValue {
             DiffValue::FuncRef { .. }
             | DiffValue::ExternRef { .. }
             | DiffValue::AnyRef { .. }
-            | DiffValue::ExnRef { .. } => {
+            | DiffValue::ExnRef { .. }
+            | DiffValue::ContRef { .. } => {
                 unimplemented!()
             }
         }

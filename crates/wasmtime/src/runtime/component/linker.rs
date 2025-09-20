@@ -515,9 +515,9 @@ impl<T: 'static> LinkerInstance<'_, T> {
     ///
     /// The closure `f` is provided an [`Accessor`] which can be used to acquire
     /// temporary, blocking, access to a [`StoreContextMut`] (through
-    /// [`Access`]). This models how a store is not available to `f` across
-    /// `await` points but it is temporarily available while actively being
-    /// polled.
+    /// [`Access`](crate::component::Access]). This models how a store is not
+    /// available to `f` across `await` points but it is temporarily available
+    /// while actively being polled.
     ///
     /// # Blocking / Async Behavior
     ///
@@ -837,7 +837,7 @@ impl<T: 'static> LinkerInstance<'_, T> {
                         );
                         let mut future = std::pin::pin!(dtor(accessor, param));
                         std::future::poll_fn(|cx| {
-                            crate::component::concurrent::tls::set(store.0.traitobj_mut(), || {
+                            crate::component::concurrent::tls::set(store.0, || {
                                 future.as_mut().poll(cx)
                             })
                         })

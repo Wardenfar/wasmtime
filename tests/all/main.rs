@@ -13,6 +13,7 @@ mod custom_code_memory;
 mod debug;
 mod defaults;
 mod epoch_interruption;
+mod exceptions;
 mod exnrefs;
 mod externals;
 mod fuel;
@@ -50,7 +51,6 @@ mod threads;
 mod traps;
 mod types;
 mod wait_notify;
-mod wasi_testsuite;
 mod winch_engine_features;
 
 /// A helper to compile a module in a new store with reference types enabled.
@@ -103,7 +103,7 @@ pub(crate) fn small_pool_config() -> wasmtime::PoolingAllocationConfig {
     // When testing, we may choose to start with MPK force-enabled to ensure
     // we use that functionality.
     if std::env::var("WASMTIME_TEST_FORCE_MPK").is_ok() {
-        config.memory_protection_keys(wasmtime::MpkEnabled::Enable);
+        config.memory_protection_keys(wasmtime::Enabled::No);
     }
 
     config.total_stacks(1);

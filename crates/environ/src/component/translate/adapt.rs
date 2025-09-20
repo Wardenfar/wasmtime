@@ -174,6 +174,9 @@ pub struct AdapterOptions {
     pub post_return: Option<dfg::CoreDef>,
     /// Whether to use the async ABI for lifting or lowering.
     pub async_: bool,
+    /// Whether or not this intrinsic can consume a task cancellation
+    /// notification.
+    pub cancellable: bool,
     /// The core function type that is being lifted from / lowered to.
     pub core_type: ModuleInternedTypeIndex,
     /// The data model used by this adapter: linear memory or GC objects.
@@ -244,7 +247,7 @@ impl<'data> Translator<'_, 'data> {
             // Record, for each adapter in this adapter module, the module that
             // the adapter was placed within as well as the function index of
             // the adapter in the wasm module generated. Note that adapters are
-            // paritioned in-order so we're guaranteed to push the adapters
+            // partitioned in-order so we're guaranteed to push the adapters
             // in-order here as well. (with an assert to double-check)
             for (adapter, name) in adapter_module.adapters.iter().zip(&names) {
                 let index = translation.module.exports[name];

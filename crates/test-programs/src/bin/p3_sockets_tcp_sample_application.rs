@@ -3,7 +3,7 @@ use test_programs::p3::wasi::sockets::types::{
     IpAddressFamily, IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress, TcpSocket,
 };
 use test_programs::p3::wit_stream;
-use wit_bindgen_rt::async_support::StreamResult;
+use wit_bindgen::StreamResult;
 
 struct Component;
 
@@ -44,10 +44,14 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
             let (mut data_rx, fut) = sock.receive();
             let (result, data) = data_rx.read(Vec::with_capacity(100)).await;
             assert_eq!(result, StreamResult::Complete(first_message.len()));
-
             // Check that we sent and received our message!
             assert_eq!(data, first_message); // Not guaranteed to work but should work in practice.
-            fut.await.unwrap()
+
+            let (result, data) = data_rx.read(Vec::with_capacity(1)).await;
+            assert_eq!(result, StreamResult::Dropped);
+            assert_eq!(data, []);
+
+            fut.await.unwrap();
         },
     );
 
@@ -73,10 +77,14 @@ async fn test_tcp_sample_application(family: IpAddressFamily, bind_address: IpSo
             let (mut data_rx, fut) = sock.receive();
             let (result, data) = data_rx.read(Vec::with_capacity(100)).await;
             assert_eq!(result, StreamResult::Complete(second_message.len()));
-
             // Check that we sent and received our message!
             assert_eq!(data, second_message); // Not guaranteed to work but should work in practice.
-            fut.await.unwrap()
+
+            let (result, data) = data_rx.read(Vec::with_capacity(1)).await;
+            assert_eq!(result, StreamResult::Dropped);
+            assert_eq!(data, []);
+
+            fut.await.unwrap();
         }
     );
 }

@@ -895,7 +895,9 @@ fn aarch64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             collector.reg_early_def(rtmp1);
             collector.reg_early_def(rtmp2);
         }
-        Inst::LoadExtName { rd, .. } => {
+        Inst::LoadExtNameGot { rd, .. }
+        | Inst::LoadExtNameNear { rd, .. }
+        | Inst::LoadExtNameFar { rd, .. } => {
             collector.reg_def(rd);
         }
         Inst::LoadAddr { rd, mem } => {
@@ -929,6 +931,9 @@ fn aarch64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
         Inst::EmitIsland { .. } => {}
         Inst::DummyUse { reg } => {
             collector.reg_use(reg);
+        }
+        Inst::LabelAddress { dst, .. } => {
+            collector.reg_def(dst);
         }
         Inst::StackProbeLoop { start, end, .. } => {
             collector.reg_early_def(start);
@@ -992,7 +997,7 @@ impl MachInst for Inst {
         //
         // See the note in [crate::isa::aarch64::abi::is_caller_save_reg] for
         // more information on this ABI-implementation hack.
-        let caller_clobbers = AArch64MachineDeps::get_regs_clobbered_by_call(caller, is_exception);
+        let caller_clobbers = AArch64MachineDeps::get_regs_clobbered_by_call(caller, false);
         let callee_clobbers = AArch64MachineDeps::get_regs_clobbered_by_call(callee, is_exception);
 
         let mut all_clobbers = caller_clobbers;
@@ -1011,6 +1016,19 @@ impl MachInst for Inst {
         match self {
             Self::Args { .. } => true,
             _ => false,
+        }
+    }
+
+    fn call_type(&self) -> CallType {
+        match self {
+            Inst::Call { .. }
+            | Inst::CallInd { .. }
+            | Inst::ElfTlsGetAddr { .. }
+            | Inst::MachOTlsGetAddr { .. } => CallType::Regular,
+
+            Inst::ReturnCall { .. } | Inst::ReturnCallInd { .. } => CallType::TailCall,
+
+            _ => CallType::None,
         }
     }
 
@@ -2217,11 +2235,6 @@ impl Inst {
                     VecALUOp::Fcmeq => ("fcmeq", size),
                     VecALUOp::Fcmgt => ("fcmgt", size),
                     VecALUOp::Fcmge => ("fcmge", size),
-                    VecALUOp::And => ("and", size),
-                    VecALUOp::Bic => ("bic", size),
-                    VecALUOp::Orr => ("orr", size),
-                    VecALUOp::Orn => ("orn", size),
-                    VecALUOp::Eor => ("eor", size),
                     VecALUOp::Umaxp => ("umaxp", size),
                     VecALUOp::Add => ("add", size),
                     VecALUOp::Sub => ("sub", size),
@@ -2247,6 +2260,14 @@ impl Inst {
                     VecALUOp::Uzp2 => ("uzp2", size),
                     VecALUOp::Trn1 => ("trn1", size),
                     VecALUOp::Trn2 => ("trn2", size),
+
+                    // Lane division does not affect bitwise operations.
+                    // However, when printing, use 8-bit lane division to conform to ARM formatting.
+                    VecALUOp::And => ("and", size.as_scalar8_vector()),
+                    VecALUOp::Bic => ("bic", size.as_scalar8_vector()),
+                    VecALUOp::Orr => ("orr", size.as_scalar8_vector()),
+                    VecALUOp::Orn => ("orn", size.as_scalar8_vector()),
+                    VecALUOp::Eor => ("eor", size.as_scalar8_vector()),
                 };
                 let rd = pretty_print_vreg_vector(rd.to_reg(), size);
                 let rn = pretty_print_vreg_vector(rn, size);
@@ -2378,15 +2399,6 @@ impl Inst {
             }
             &Inst::VecMisc { op, rd, rn, size } => {
                 let (op, size, suffix) = match op {
-                    VecMisc2::Not => (
-                        "mvn",
-                        if size.is_128bits() {
-                            VectorSize::Size8x16
-                        } else {
-                            VectorSize::Size8x8
-                        },
-                        "",
-                    ),
                     VecMisc2::Neg => ("neg", size, ""),
                     VecMisc2::Abs => ("abs", size, ""),
                     VecMisc2::Fabs => ("fabs", size, ""),
@@ -2414,6 +2426,10 @@ impl Inst {
                     VecMisc2::Fcmgt0 => ("fcmgt", size, ", #0.0"),
                     VecMisc2::Fcmle0 => ("fcmle", size, ", #0.0"),
                     VecMisc2::Fcmlt0 => ("fcmlt", size, ", #0.0"),
+
+                    // Lane division does not affect bitwise operations.
+                    // However, when printing, use 8-bit lane division to conform to ARM formatting.
+                    VecMisc2::Not => ("mvn", size.as_scalar8_vector(), ""),
                 };
                 let rd = pretty_print_vreg_vector(rd.to_reg(), size);
                 let rn = pretty_print_vreg_vector(rn, size);
@@ -2766,13 +2782,25 @@ impl Inst {
                     targets
                 )
             }
-            &Inst::LoadExtName {
+            &Inst::LoadExtNameGot { rd, ref name } => {
+                let rd = pretty_print_reg(rd.to_reg());
+                format!("load_ext_name_got {rd}, {name:?}")
+            }
+            &Inst::LoadExtNameNear {
                 rd,
                 ref name,
                 offset,
             } => {
                 let rd = pretty_print_reg(rd.to_reg());
-                format!("load_ext_name {rd}, {name:?}+{offset}")
+                format!("load_ext_name_near {rd}, {name:?}+{offset}")
+            }
+            &Inst::LoadExtNameFar {
+                rd,
+                ref name,
+                offset,
+            } => {
+                let rd = pretty_print_reg(rd.to_reg());
+                format!("load_ext_name_far {rd}, {name:?}+{offset}")
             }
             &Inst::LoadAddr { rd, ref mem } => {
                 // TODO: we really should find a better way to avoid duplication of
@@ -2880,6 +2908,10 @@ impl Inst {
                 let reg = pretty_print_reg(reg);
                 format!("dummy_use {reg}")
             }
+            &Inst::LabelAddress { dst, label } => {
+                let dst = pretty_print_reg(dst.to_reg());
+                format!("label_address {dst}, {label:?}")
+            }
             &Inst::StackProbeLoop { start, end, step } => {
                 let start = pretty_print_reg(start.to_reg());
                 let end = pretty_print_reg(end);
@@ -2976,7 +3008,9 @@ impl MachInstLabelUse for LabelUse {
             LabelUse::Branch14 => (pc_rel_shifted & 0x3fff) << 5,
             LabelUse::Branch19 | LabelUse::Ldr19 => (pc_rel_shifted & 0x7ffff) << 5,
             LabelUse::Branch26 => pc_rel_shifted & 0x3ffffff,
-            LabelUse::Adr21 => (pc_rel_shifted & 0x7ffff) << 5 | (pc_rel_shifted & 0x180000) << 10,
+            // Note: the *low* two bits of offset are put in the
+            // *high* bits (30, 29).
+            LabelUse::Adr21 => (pc_rel_shifted & 0x1ffffc) << 3 | (pc_rel_shifted & 3) << 29,
             LabelUse::PCRel32 => pc_rel_shifted,
         };
         let is_add = match self {

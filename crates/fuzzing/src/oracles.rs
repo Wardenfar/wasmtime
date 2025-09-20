@@ -417,6 +417,8 @@ fn unwrap_instance(
         || e.is::<wasmtime::PoolConcurrencyLimitError>()
         // And GC heap OOMs.
         || e.is::<wasmtime::GcHeapOutOfMemory<()>>()
+        // And thrown exceptions.
+        || e.is::<wasmtime::ThrownException>()
     {
         return None;
     }
@@ -756,7 +758,10 @@ pub fn wast_test(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<()> {
     } else {
         wasmtime_wast::Async::Yes
     };
-    let mut wast_context = WastContext::new(fuzz_config.to_store(), async_);
+    let engine = Engine::new(&fuzz_config.to_wasmtime()).unwrap();
+    let mut wast_context = WastContext::new(&engine, async_, move |store| {
+        fuzz_config.configure_store_epoch_and_fuel(store);
+    });
     wast_context
         .register_spectest(&wasmtime_wast::SpectestConfig {
             use_shared_memory: true,
@@ -775,7 +780,7 @@ pub fn wast_test(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<()> {
 /// case -- used to test below that gc happens reasonably soon and eventually.
 pub fn table_ops(
     mut fuzz_config: generators::Config,
-    ops: generators::table_ops::TableOps,
+    mut ops: generators::table_ops::TableOps,
 ) -> Result<usize> {
     let expected_drops = Arc::new(AtomicUsize::new(0));
     let num_dropped = Arc::new(AtomicUsize::new(0));
@@ -922,9 +927,9 @@ pub fn table_ops(
 
             log::info!(
                 "table_ops: begin allocating {} externref arguments",
-                ops.num_globals
+                ops.limits.num_globals
             );
-            let args: Vec<_> = (0..ops.num_params)
+            let args: Vec<_> = (0..ops.limits.num_params)
                 .map(|_| {
                     Ok(Val::ExternRef(Some(ExternRef::new(
                         &mut scope,
@@ -934,7 +939,7 @@ pub fn table_ops(
                 .collect::<Result<_>>()?;
             log::info!(
                 "table_ops: end allocating {} externref arguments",
-                ops.num_globals
+                ops.limits.num_globals
             );
 
             // The generated function should always return a trap. The only two
@@ -1417,7 +1422,8 @@ mod tests {
             | WasmFeatures::GC
             | WasmFeatures::GC_TYPES
             | WasmFeatures::CUSTOM_PAGE_SIZES
-            | WasmFeatures::EXTENDED_CONST;
+            | WasmFeatures::EXTENDED_CONST
+            | WasmFeatures::EXCEPTIONS;
 
         // All other features that wasmparser supports, which is presumably a
         // superset of the features that wasm-smith supports, are listed here as
