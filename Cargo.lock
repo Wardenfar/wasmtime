@@ -2997,9 +2997,9 @@ dependencies = [
 
 [[package]]
 name = "regalloc2"
-version = "0.13.1"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68e18e1ef763167dc6718c28a5585e62f907590a21028b8e87be1318f19ef1cb"
+checksum = "efd8138ce7c3d7c13be4f61893154b5d711bd798d2d7be3ecb8dcc7e7a06ca98"
 dependencies = [
  "allocator-api2",
  "bumpalo",
@@ -4461,7 +4461,6 @@ dependencies = [
  "wasm-wave",
  "wasmparser 0.239.0",
  "wasmtime-environ",
- "wasmtime-internal-asm-macros",
  "wasmtime-internal-cache",
  "wasmtime-internal-component-macro",
  "wasmtime-internal-component-util",
@@ -4716,13 +4715,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasmtime-internal-asm-macros"
-version = "38.0.0"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "wasmtime-internal-c-api-macros"
 version = "38.0.0"
 dependencies = [
@@ -4826,7 +4818,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "rustix 1.0.3",
- "wasmtime-internal-asm-macros",
  "wasmtime-internal-versioned-export-macros",
  "windows-sys 0.60.2",
 ]
